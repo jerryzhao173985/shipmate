@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "24.x",
+    "microsandbox": "^0.5.10",
     "typescript": "7.0.1-rc"
   },
   "overrides": {
@@ -31,5 +32,4 @@
   "engines": {
     "node": "24.x"
   }
-
 }
