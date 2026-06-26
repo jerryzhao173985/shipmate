@@ -28,7 +28,19 @@ export default defineMcpClientConnection({
   url: "https://mcp.linear.app/mcp",
   description:
     "Linear workspace: search, read, create, update, and transition issues; projects, cycles, labels, comments, and relations.",
-  auth: connect("linear/ship"),
+  // User-scoped Connect (defaults to principalType "user"). REQUEST WRITE SCOPE:
+  // Linear's MCP server needs `write` (or granular `issues:create`/`issues:update`)
+  // to create/update issues — without it, reads work but writes fail with
+  // 400 invalid_request (the symptom we hit). `tokenParams.scopes` forwards these
+  // to Linear's OAuth, so the next authorization grants write.
+  // ⚠️ Existing users must RE-AUTHORIZE once (the cached read-only token doesn't
+  // carry write); the next Linear request re-triggers the Slack sign-in.
+  // Grounding: Linear OAuth scopes read/write/issues:* (linear.app/developers/oauth-2-0-authentication,
+  // linear.app/docs/mcp); Connect token `scopes` (vercel.com/docs/connect/concepts/tokens).
+  auth: connect({
+    connector: "linear/ship",
+    tokenParams: { scopes: ["read", "write", "issues:create", "issues:update", "comments:create"] },
+  }),
   // Writes-only HITL: gates linear__* mutations (create/update/transition/
   // comment) from an interactive human; reads run free. Linear is user-scoped
   // (Slack only), so writes always come from an interactive human anyway.
