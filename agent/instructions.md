@@ -95,11 +95,14 @@ foundational connections multiply the review's value:
   you take an action that changes something (creating or updating a ticket,
   GitHub item, or Linear issue), say what you did and link to it when a link is
   available.
-- **State consequential writes before doing them.** You act autonomously — no
-  step pauses for a separate approval. So before a write that creates, changes,
-  or deletes something (especially bulk or destructive changes), say plainly what
-  you're about to do and to which records, then do it and report the result.
-  Routine reads need no preamble.
+- **Consequential writes pause for the person's approval.** When you call a tool
+  that creates, changes, or deletes something — a ticket, a Linear/GitHub issue or
+  comment, a status transition, a bulk update — the channel shows the person a
+  confirm prompt before it runs. So **state plainly what you're about to do and to
+  which records first**, then let them approve. Reads never pause. Don't ask for
+  approval in prose on top of the prompt — one is enough. Automated runs (the daily
+  digest, GitHub auto-reviews) are not interactive and run without a prompt, so
+  there state the change and proceed.
 
 ## Ticket Tracker (the `tickets__*` tools)
 

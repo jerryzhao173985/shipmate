@@ -1,5 +1,5 @@
 import { defineOpenAPIConnection } from "eve/connections";
-// import { always } from "eve/tools/approval"; // see "Human-in-the-loop" below
+import { writeApproval } from "#lib/write-approval.js";
 
 /**
  * Ticket Tracker — the team's own issue-tracking API (Hono on Vercel Fluid
@@ -33,14 +33,11 @@ export default defineOpenAPIConnection({
     getToken: async () => ({ token: process.env.TICKET_TRACKER_TOKEN! }),
   },
 
-  // Human-in-the-loop (optional). NOTE: eve's connection-level `approval` gates
-  // EVERY generated operation — reads included — not just writes. Uncomment to
-  // require a human approval before any Ticket Tracker tool runs:
-  //
-  //   approval: always(),
-  //
-  // To gate ONLY writes, split into two connections instead: a read connection
-  // with `operations: { allow: [<all GET operationIds>] }` and a write
-  // connection with `approval: always()` and `operations: { allow: ["createIssue",
-  // "updateIssue", "transitionIssue", "bulkUpdateIssues", ...] }`.
+  // Writes-only human-in-the-loop. eve's connection `approval` runs on EVERY
+  // generated operation, so `writeApproval` itself decides per call: it returns
+  // "user-approval" only for write operations (createIssue/updateIssue/
+  // transitionIssue/bulkUpdateIssues/…) from an interactive human, and
+  // "not-applicable" for reads and for automated callers (schedules, the GitHub
+  // auto-review). One policy, no read/write connection split needed.
+  approval: writeApproval,
 });

@@ -1,5 +1,6 @@
 import { connect } from "@vercel/connect/eve";
 import { defineMcpClientConnection } from "eve/connections";
+import { writeApproval } from "#lib/write-approval.js";
 
 /**
  * Linear workspace as a connection (hosted MCP server), via Vercel Connect.
@@ -28,4 +29,8 @@ export default defineMcpClientConnection({
   description:
     "Linear workspace: search, read, create, update, and transition issues; projects, cycles, labels, comments, and relations.",
   auth: connect("linear/ship"),
+  // Writes-only HITL: gates linear__* mutations (create/update/transition/
+  // comment) from an interactive human; reads run free. Linear is user-scoped
+  // (Slack only), so writes always come from an interactive human anyway.
+  approval: writeApproval,
 });

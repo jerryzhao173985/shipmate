@@ -1,5 +1,6 @@
 import { connect } from "@vercel/connect/eve";
 import { defineMcpClientConnection } from "eve/connections";
+import { writeApproval } from "#lib/write-approval.js";
 
 /**
  * GitHub as a connection (GitHub's hosted remote MCP server).
@@ -20,4 +21,8 @@ export default defineMcpClientConnection({
   description:
     "GitHub: search and read issues, pull requests, repositories, and workflow runs; comment and update where permitted.",
   auth: connect({ connector: "github/ship", principalType: "app" }),
+  // Writes-only HITL: gates github__* mutations (create_issue/add_comment/
+  // update_*/merge_*…) from an interactive human; reads and the github-webhook
+  // auto-review run free. See agent/lib/write-approval.ts.
+  approval: writeApproval,
 });

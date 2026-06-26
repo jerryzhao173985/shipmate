@@ -6,7 +6,7 @@ import type { Approval } from "eve/tools";
  * Posture (decided with the user): a consequential WRITE pauses for a human
  * confirmation when the caller is an interactive human who can actually answer
  * the prompt; READS never pause; AUTOMATED callers never pause. So:
- *   - reads (get*/list*/search*…)                        -> not-applicable
+ *   - reads (get / list / search …)                        -> not-applicable
  *   - writes from a Slack user / authenticated HTTP caller -> user-approval (parks)
  *   - writes from the app principal (schedules) or the
  *     GitHub channel (github-webhook auto-review)         -> not-applicable
