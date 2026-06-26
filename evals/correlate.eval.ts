@@ -6,6 +6,7 @@ import { defineEval } from "eve/evals";
 export default defineEval({
   description:
     "correlate extracts the cross-system join keys (ENG-12, JER-5, owner/repo#n) from PR text.",
+  tags: ["ci"], // connection-independent (model only) — safe in any CI env
   async test(t) {
     await t.send(
       "Use your tools to extract the linked issue keys and PR references from this pull request description:\n\n" +

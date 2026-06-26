@@ -1,0 +1,31 @@
+# Shipmate CI — regression gate for the agent's core logic.
+#
+# Runs on every push/PR: build the eve artifacts, typecheck, then run the
+# connection-independent eval subset (`--tag ci`). Those evals (review-couldnt-run,
+# correlation-memory, correlate, review-structured) need only a model credential —
+# no GitHub/Linear/Tickets connection — so they pass in a bare CI runner. The
+# connection + heavy-sandbox evals are verified out of band via
+# `eve eval --url <prod>` after deploy.
+#
+# Setup: this repo currently has NO git remote, so this workflow is dormant until
+# the repo is pushed to GitHub. Then add one secret:
+#   AI_GATEWAY_API_KEY  — Vercel AI Gateway key for anthropic/claude-sonnet-4.6
+# (or wire VERCEL_OIDC via the Vercel GitHub integration instead).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm run ci
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}

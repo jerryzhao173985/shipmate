@@ -8,6 +8,7 @@ import { defineEval } from "eve/evals";
 export default defineEval({
   description:
     "Shipmate remembers a PR↔ticket link across turns: remember_link in turn 1, recall_links returns it in turn 2.",
+  tags: ["ci"], // connection-independent (model only) — safe in any CI env
   async test(t) {
     await t.send(
       "Remember this for later: the pull request https://github.com/acme/widgets/pull/7 implements ticket ENG-12, and its review failed the test check. Record it.",

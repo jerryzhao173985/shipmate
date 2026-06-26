@@ -18,6 +18,7 @@ const CouldntRunVerdict = z.object({
 export default defineEval({
   description:
     "A caller can request a structured review verdict (outputSchema) and get typed JSON reflecting review_pr's result.",
+  tags: ["ci"], // no connection; review_pr clone fails fast on any backend
   async test(t) {
     const turn = await t.send({
       message:

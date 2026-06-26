@@ -9,6 +9,7 @@ import { defineEval } from "eve/evals";
 export default defineEval({
   description:
     "review_pr on an unclonable PR returns ranChecks:false and the agent reports it couldn't run (never a false verdict).",
+  tags: ["ci"], // no connection; review_pr clone fails fast on any backend
   async test(t) {
     await t.send(
       "Review this pull request and tell me whether it is safe to merge: https://github.com/shipmate-nonexistent-org-zzz/does-not-exist/pull/1",
