@@ -21,6 +21,11 @@ const FAILING_CHECK = /\b(test|tests|lint|build)\b/i;
 export default defineEval({
   description:
     "Shipmate reviews a PR by running it: calls review_pr, and either names the failing check (real backend) or honestly reports the checks couldn't run (just-bash).",
+  // review_pr clones + installs + tests a real repo in the sandbox. On a COLD
+  // backend (a fresh Vercel Sandbox in production, or a first-run microsandbox VM
+  // pull) that can take several minutes, so give it generous headroom — otherwise
+  // this eval is the one that flakes specifically in production.
+  timeoutMs: 15 * 60 * 1000,
   async test(t) {
     await t.send(
       `Review this pull request and tell me whether it is safe to merge: ${PR_URL}`,
