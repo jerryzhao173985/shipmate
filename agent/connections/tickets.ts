@@ -1,5 +1,4 @@
 import { defineOpenAPIConnection } from "eve/connections";
-import { writeApproval } from "#lib/write-approval.js";
 
 /**
  * Ticket Tracker — the team's own issue-tracking API (Hono on Vercel Fluid
@@ -33,11 +32,10 @@ export default defineOpenAPIConnection({
     getToken: async () => ({ token: process.env.TICKET_TRACKER_TOKEN! }),
   },
 
-  // Writes-only human-in-the-loop. eve's connection `approval` runs on EVERY
-  // generated operation, so `writeApproval` itself decides per call: it returns
-  // "user-approval" only for write operations (createIssue/updateIssue/
-  // transitionIssue/bulkUpdateIssues/…) from an interactive human, and
-  // "not-applicable" for reads and for automated callers (schedules, the GitHub
-  // auto-review). One policy, no read/write connection split needed.
-  approval: writeApproval,
+  // FULLY TRUSTED — no approval gate and no operation scoping. The ticket tracker
+  // is OUR OWN internal API (we build and maintain it), so every operation is
+  // auto-allowed: reads AND writes run without a human prompt, and the whole
+  // operation surface stays available. This is deliberate — unlike the EXTERNAL
+  // services (github/linear), whose write tools are HITL-gated by `writeApproval`
+  // and whose destructive surface is scoped, the tracker carries no such guard.
 });

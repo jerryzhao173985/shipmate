@@ -45,4 +45,12 @@ export default defineMcpClientConnection({
   // comment) from an interactive human; reads run free. Linear is user-scoped
   // (Slack only), so writes always come from an interactive human anyway.
   approval: writeApproval,
+
+  // Linear writes are TRANSITIONING to this Connect path (per-user, write scope
+  // above) as the PRIMARY route; the API-key tools (agent/tools/linear_create_*)
+  // stay as a fallback until Connect-write is verified post-re-auth, then retire.
+  // NO tool block-list here yet: Linear's hosted MCP does not publish its tool
+  // names, so a deny-list would be a guess (cite-or-defer). The OAuth scopes
+  // above + the writeApproval gate are the active controls. Add a grounded
+  // `tools: { block: [...] }` once the live names are enumerated via tools/list.
 });

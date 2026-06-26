@@ -34,6 +34,9 @@ export default defineSchedule({
 
     const message = [
       "Build the team's morning work digest and post it to this Slack channel.",
+      "READ-ONLY: only read/list/search. Do NOT create, update, transition,",
+      "comment on, or delete anything — especially ticket-tracker writes, which run",
+      "without an approval prompt in this scheduled (app-principal) context.",
       prInstruction,
       "Use `tickets__*` for tickets in triage or in progress.",
       "Do NOT use the Linear tools — this scheduled run has no user principal.",

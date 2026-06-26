@@ -142,14 +142,17 @@ To let two sessions develop without clobbering each other:
 
 - **`placeholderAuth()`** blocks browser requests in production — replace it with a real
   auth provider (Auth.js/Clerk) or `none()` before exposing a browser UI.
-- **Human-in-the-loop / approvals:** **nothing is approval-gated today** — there are no
-  `approval:` fields on any tool or connection, so reads and writes run autonomously. The
-  instructions enforce *"state consequential writes before doing them"* (and *"confirm
-  before posting a review back"*) in prose rather than a hard gate. If you want a real
-  gate: a connection-level `approval: always()` gates *every* operation (reads included),
-  so to gate writes only, split into a read + a write connection (see the commented
-  guidance in `connections/tickets.ts`), or put the write behind a dedicated `defineTool`
-  with `approval: always()`.
+- **Human-in-the-loop / approvals (writes-only HITL on the EXTERNAL connections):** the
+  shared policy `agent/lib/write-approval.ts` is set as `approval:` on the **github** and
+  **linear** connections. eve runs a connection's `approval` on every operation, so the
+  policy decides per call: a **write** op from an **interactive human** (Slack/HTTP) →
+  `user-approval` (parks for a confirm); **reads** and **automated callers** (the app
+  principal for schedules, the `github-webhook` auto-review) → `not-applicable` (run free).
+  The **ticket tracker is exempt — fully trusted** (no `approval:`, all ops auto-run), since
+  it's our own internal API. The key-based Linear write tools (`agent/tools/linear_create_*`)
+  carry their own `approval: always()` (non-idempotent create/update). To add a gate
+  elsewhere: a connection-level `approval: always()` gates *every* op; a custom `Approval`
+  policy (like `writeApproval`) gates by `toolName`; or a `defineTool` `approval`.
 - **No self-reply tool:** instructions forbid the agent from posting its own reply through
   any tool — Slack/HTTP deliver the response automatically. Don't add a "send message" tool.
 - **Durability:** sessions are crash-safe/resumable (Workflow SDK underneath). Two ids
