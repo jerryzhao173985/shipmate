@@ -32,10 +32,13 @@ export default defineOpenAPIConnection({
     getToken: async () => ({ token: process.env.TICKET_TRACKER_TOKEN! }),
   },
 
-  // FULLY TRUSTED — no approval gate and no operation scoping. The ticket tracker
-  // is OUR OWN internal API (we build and maintain it), so every operation is
-  // auto-allowed: reads AND writes run without a human prompt, and the whole
-  // operation surface stays available. This is deliberate — unlike the EXTERNAL
-  // services (github/linear), whose write tools are HITL-gated by `writeApproval`
-  // and whose destructive surface is scoped, the tracker carries no such guard.
+  // TRUSTED internal API — NO approval gate: reads AND writes (create/update/
+  // transition/bulkUpdate/comment) auto-run without a human prompt, since we build
+  // and maintain the tracker. The ONLY scoping is a deny-list of the IRREVERSIBLE
+  // delete operations: the GitHub auto-review processes untrusted PR content as a
+  // principal that skips approval, and tickets writes are ungated, so without this
+  // an injected review turn could permanently delete tracker data. Blocking the
+  // deletes (they never reach the model / connection_search) removes that
+  // catastrophic vector while keeping every other operation auto-allowed.
+  operations: { block: ["deleteIssue", "deleteLabel", "deleteWebhook"] },
 });
