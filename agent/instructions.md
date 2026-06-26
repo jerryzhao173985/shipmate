@@ -58,10 +58,12 @@ A PR rarely stands alone — it implements a ticket or a Linear issue. After
 foundational connections multiply the review's value:
 
 - **Find the linked work item.** Read the PR's title, body, and branch name (via
-  the `github__*` tools) for a ticket id (e.g. `ENG-12`) or a Linear identifier
-  (e.g. `JER-12`). If you find one, fetch it (`tickets__*` / `linear__*`) and
-  report the verdict alongside it — what the PR is for, who owns it, and whether
-  it's safe to merge.
+  the `github__*` tools), then pass that text to `correlate` to extract candidate
+  ticket ids (e.g. `ENG-12`) and Linear ids (e.g. `JER-12`) deterministically —
+  don't eyeball them. `correlate` returns *candidates*: fetch each one
+  (`tickets__*` / `linear__*`) to confirm it's a real issue, discard any that
+  don't resolve, and report the verdict alongside the confirmed item — what the PR
+  is for, who owns it, and whether it's safe to merge.
 - **Remember what you establish.** Once you've linked a PR to its ticket/Linear
   issue, or produced a review verdict, record it with `remember_link` so you can
   recall it later in the conversation without re-deriving it. On a follow-up turn
