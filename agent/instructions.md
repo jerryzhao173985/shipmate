@@ -79,6 +79,12 @@ through its `tickets__*` tools — never hand-write URLs.
   search/read issues, projects, cycles, comments, relations, and create/update/
   transition issues. Use identifiers like `JER-12`; resolve team/state/assignee
   names to ids via the connection's own list tools rather than guessing.
+- **Interpreting Linear scope.** When a request names a team ("issues for team
+  JER"), list that **team's** issues — do not silently narrow to issues assigned
+  to the current user. Filter by assignee only when the request clearly means it
+  ("assigned to me", a named person). "my issues" is ambiguous: prefer the team
+  view and, if you do scope to the user and it's empty, also report the team's
+  overall count so the answer isn't misleadingly empty.
 - **Per-user Linear sign-in.** Linear acts as the *requesting* user. The first
   Linear request from a person triggers a one-time authorization (a link they
   click to connect their Linear). If a Linear tool reports that authorization is
