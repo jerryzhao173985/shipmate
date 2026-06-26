@@ -214,10 +214,16 @@ export default defineTool({
     const failingChecks = realChecks.filter((c) => !c.passed).map((c) => c.name);
     const passed = failingChecks.length === 0;
     const ran = realChecks.map((c) => c.name).join(", ");
+    const refNote =
+      reviewedRef === "head"
+        ? " [reviewed PR head — the merge into the base has conflicts]"
+        : reviewedRef === "merge"
+          ? " [reviewed the PR merged into its base]"
+          : "";
     const summary = passed
-      ? `${owner}/${repo}#${number}: all checks passed (${ran}).`
-      : `${owner}/${repo}#${number}: FAILED — ${failingChecks.join(", ")} failing${timedOut ? " (some timed out)" : ""} (ran: ${ran}). Not safe to merge.`;
+      ? `${owner}/${repo}#${number}: all checks passed (${ran})${refNote}.`
+      : `${owner}/${repo}#${number}: FAILED — ${failingChecks.join(", ")} failing${timedOut ? " (some timed out)" : ""} (ran: ${ran})${refNote}. Not safe to merge.`;
 
-    return { passed, ranChecks: true, failingChecks, checks, timedOut, summary, pr, output: trimTail(stdout) };
+    return { passed, ranChecks: true, failingChecks, checks, timedOut, reviewedRef, summary, pr, output: trimTail(stdout) };
   },
 });
