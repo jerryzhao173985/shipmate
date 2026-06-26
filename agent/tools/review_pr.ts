@@ -59,6 +59,12 @@ const Verdict = z.object({
   checks: z.array(CheckResult),
   /** True when at least one check was killed by the wall-clock timeout (exit 124). */
   timedOut: z.boolean(),
+  /**
+   * Which ref was reviewed: "merge" = the PR merged into its base (what would
+   * actually land, like GitHub Actions' default), "head" = the PR branch tip
+   * (used when the merge has conflicts with the base). null when nothing checked out.
+   */
+  reviewedRef: z.enum(["merge", "head"]).nullable(),
   /** One-line human verdict the model can quote. */
   summary: z.string(),
   /** Parsed PR coordinates, for the model to reference. */
@@ -92,7 +98,14 @@ export default defineTool({
   }),
   outputSchema: Verdict,
   async execute({ prUrl }, ctx): Promise<VerdictT> {
-    const base = { passed: false, ranChecks: false, failingChecks: [], checks: [], timedOut: false };
+    const base = {
+      passed: false,
+      ranChecks: false,
+      failingChecks: [],
+      checks: [],
+      timedOut: false,
+      reviewedRef: null as "merge" | "head" | null,
+    };
     const m = prUrl.match(PR_URL);
     if (!m) {
       return {
@@ -128,7 +141,9 @@ export default defineTool({
       'rm -rf "$WORK"',
       `if timeout -k 10 ${CLONE_TIMEOUT} git clone --depth 50 "https://github.com/${owner}/${repo}.git" "$WORK" > clone.log 2>&1; then echo "###CHECK clone 0"; else echo "###CHECK clone $?"; tail -n 40 clone.log; exit 0; fi`,
       'cd "$WORK"',
-      `if timeout -k 10 ${CLONE_TIMEOUT} git fetch --depth 50 origin "pull/${number}/head" > ../fetch.log 2>&1 && git checkout -q FETCH_HEAD 2> ../checkout.log; then echo "###CHECK checkout 0"; else echo "###CHECK checkout $?"; tail -n 40 ../fetch.log ../checkout.log; exit 0; fi`,
+      // Prefer the merge ref (PR merged into base = what actually lands, like
+      // GitHub Actions). Fall back to the PR head when the merge has conflicts.
+      `if timeout -k 10 ${CLONE_TIMEOUT} git fetch --depth 50 origin "pull/${number}/merge" > ../fetch.log 2>&1 && git checkout -q FETCH_HEAD 2> ../checkout.log; then echo "###REF merge"; echo "###CHECK checkout 0"; elif timeout -k 10 ${CLONE_TIMEOUT} git fetch --depth 50 origin "pull/${number}/head" > ../fetch.log 2>&1 && git checkout -q FETCH_HEAD 2> ../checkout.log; then echo "###REF head"; echo "###CHECK checkout 0"; else echo "###CHECK checkout 1"; tail -n 40 ../fetch.log ../checkout.log; exit 0; fi`,
       'if [ ! -f package.json ]; then echo "###CHECK detect 1"; echo "No package.json at repo root; Shipmate reviews Node projects for now."; exit 0; fi',
       `if [ -f package-lock.json ]; then timeout -k 10 ${INSTALL_TIMEOUT} npm ci > ../install.log 2>&1; else timeout -k 10 ${INSTALL_TIMEOUT} npm install > ../install.log 2>&1; fi`,
       'rc=$?; echo "###CHECK install $rc"; tail -n 30 ../install.log',
@@ -161,6 +176,13 @@ export default defineTool({
       if (cm) checks.push({ name: cm[1], passed: cm[2] === "0", exitCode: Number.parseInt(cm[2], 10) });
     }
 
+    const refLine = stdout.split("\n").find((l) => /^###REF (merge|head)\s*$/.test(l));
+    const reviewedRef: "merge" | "head" | null = refLine
+      ? refLine.includes("merge")
+        ? "merge"
+        : "head"
+      : null;
+
     const by = (n: string) => checks.find((c) => c.name === n);
     const cloneOk = by("clone")?.passed === true;
     const checkoutOk = by("checkout")?.passed === true;
@@ -181,6 +203,7 @@ export default defineTool({
       return {
         ...base,
         timedOut,
+        reviewedRef,
         checks,
         summary: `Could not run checks for ${owner}/${repo}#${number}: ${reason}`,
         pr,
