@@ -137,6 +137,12 @@ export default defineTool({
     // sandbox firewall, not by anything in this script.
     const script = [
       "set -u",
+      // Never let git block on an interactive credential prompt: a nonexistent or
+      // private repo returns 401, and without this git would try to read a username
+      // from a TTY ("fatal: could not read Username") — which hangs a real
+      // private-repo review (no token) until the timeout. These make the clone fail
+      // FAST and cleanly so the verdict is an honest ranChecks:false.
+      "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true GCM_INTERACTIVE=never",
       "WORK=review",
       'rm -rf "$WORK"',
       `if timeout -k 10 ${CLONE_TIMEOUT} git clone --depth 50 "https://github.com/${owner}/${repo}.git" "$WORK" > clone.log 2>&1; then echo "###CHECK clone 0"; else echo "###CHECK clone $?"; tail -n 40 clone.log; exit 0; fi`,
