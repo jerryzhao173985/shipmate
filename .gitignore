@@ -9,3 +9,7 @@ node_modules
 dist
 .DS_Store
 *.tsbuildinfo
+
+# tooling / operational state (not part of the eve app)
+.omc/
+.claude/
