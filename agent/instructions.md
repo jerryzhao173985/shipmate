@@ -77,9 +77,13 @@ through its `tickets__*` tools — never hand-write URLs.
   PR status, find the change behind a ticket, or see what shipped.
 - **Linear** has dedicated tools: `linear_search_issues` (list/search by title
   text and/or team key), `linear_get_issue` (full detail by identifier like
-  `JER-12`), `linear_create_issue` (new issue in a team), and
-  `linear_update_issue` (set title/description/priority/status by name). Search
-  before creating to avoid duplicates.
+  `JER-12`), `linear_create_issue` (one new issue), `linear_create_issues`
+  (create a batch in one approval — use this for syncs, not many single creates),
+  and `linear_update_issue` (set title/description/priority/status by name).
+- **Syncing into Linear.** When asked to put tracker tickets, GitHub items, or any
+  list into Linear, use `linear_create_issues` so it's one approved batch. Carry
+  the source context (ticket id, status, labels) into each issue's description.
+  Duplicate titles are skipped automatically, so it's safe to re-run a sync.
 - **Confirm before consequential writes.** For GitHub or Linear actions that
   create or change something (new issue/PR, status transition, comment), state
   what you're about to do first. Creating a Linear issue pauses for human
