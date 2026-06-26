@@ -1,16 +1,18 @@
-# Shipmate CI — regression gate for the agent's core logic.
+# Shipmate CI — regression gate on every push/PR.
 #
-# Runs on every push/PR: build the eve artifacts, typecheck, then run the
-# connection-independent eval subset (`--tag ci`). Those evals (review-couldnt-run,
-# correlation-memory, correlate, review-structured) need only a model credential —
-# no GitHub/Linear/Tickets connection — so they pass in a bare CI runner. The
-# connection + heavy-sandbox evals are verified out of band via
-# `eve eval --url <prod>` after deploy.
+# Two tiers:
+#  1. Always (no credential): `eve build` + `tsc` — catches discovery/compile/type
+#     regressions.
+#  2. Evals (needs a model credential): the connection-INDEPENDENT eval subset
+#     (`--tag ci` → review-couldnt-run, correlation-memory, correlate,
+#     review-structured). These call the model, so they run ONLY when the
+#     `AI_GATEWAY_API_KEY` repo secret is set — until then they're skipped and CI
+#     still passes on the free checks. (The connection evals — tickets/github/linear
+#     — need Vercel Connect auth and are verified against the deployed agent, not CI.)
 #
-# Setup: this repo currently has NO git remote, so this workflow is dormant until
-# the repo is pushed to GitHub. Then add one secret:
-#   AI_GATEWAY_API_KEY  — Vercel AI Gateway key for anthropic/claude-sonnet-4.6
-# (or wire VERCEL_OIDC via the Vercel GitHub integration instead).
+# To enable the eval tier, add the secret once:
+#   gh secret set AI_GATEWAY_API_KEY --repo jerryzhao173985/shipmate
+# (value: a Vercel AI Gateway API key for anthropic/claude-sonnet-4.6).
 name: CI
 
 on:
@@ -20,12 +22,20 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    env:
+      # Exposed from the secret so the eval step can gate on its presence without
+      # referencing `secrets.*` in an `if:` (not allowed at step level).
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
       - run: npm ci
-      - run: npm run ci
-        env:
-          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      # Tier 1 — free checks (no model, no connections)
+      - run: npm run build
+      - run: npm run typecheck
+      # Tier 2 — connection-independent evals (only when the key is configured)
+      - name: Connection-independent evals
+        if: ${{ env.AI_GATEWAY_API_KEY != '' }}
+        run: npx eve eval --tag ci
