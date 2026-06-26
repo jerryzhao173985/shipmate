@@ -22,14 +22,18 @@ import { defaultGitHubAuth, githubChannel } from "eve/channels/github";
  * it via `read_file`/`glob`/`grep`; controlled *execution* happens only through
  * `review_pr`. That is the intended security posture, not a limitation.
  *
- * [VERIFY] Runtime (not yet exercised) requires: (1) the `github/ship` connector
- * to FORWARD GitHub webhooks to this deployment — enable triggers on the
- * connector + attach this project as a trigger destination
- * (`vercel connect attach github/ship --triggers --trigger-path /eve/v1/github`),
- * (2) `botName` to match the connector's GitHub App login for @mentions, and
- * (3) a real PR event. Structurally discovered + typechecked; end-to-end pending
- * that infra + a live PR. Coordinated with the review/sandbox lane (this channel
- * triggers their `review_pr` and shares the sandbox checkout).
+ * [BLOCKED — Connect trigger forwarding is "Slack-only in beta"]
+ * Vercel Connect does NOT forward GitHub webhooks yet
+ * (vercel.com/docs/connect/concepts/triggers: "Trigger forwarding is Slack-only
+ * in beta"), so the Connect path above cannot deliver PR events today, even
+ * though `connectGitHubCredentials` anticipates it (code-vs-docs divergence).
+ * To activate NOW, switch to a classic GitHub App webhook instead of Connect:
+ *   credentials: {}  // falls back to env GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY /
+ *                    // GITHUB_WEBHOOK_SECRET; point the App's webhook at
+ *                    // https://<deployment>/eve/v1/github
+ * Until then this channel is structurally discovered + typechecked but DORMANT
+ * (no webhook source). `botName` must also match the App's login for @mentions.
+ * Coordinated with the review/sandbox lane (it triggers their `review_pr`).
  *
  * grounding: githubChannel/onPullRequest/defaultGitHubAuth — docs/channels/github.mdx:7,35,44-52;
  * connectGitHubCredentials — @vercel/connect/eve (github-credentials.d.ts).
