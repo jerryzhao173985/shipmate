@@ -24,6 +24,10 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+  checks: write # let the JUnit reporter create a check run with per-eval annotations
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -56,6 +60,7 @@ jobs:
           check_name: eve evals
           fail_on_failure: false
           require_tests: false
+          include_passed: true # list the passing evals in the check (none failed)
 
       # Keep the full eval artifacts (summary, per-eval verdicts, event streams)
       - name: Upload eval artifacts
