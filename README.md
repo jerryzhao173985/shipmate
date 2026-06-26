@@ -1,5 +1,7 @@
 # Shipmate
 
+[![CI](https://github.com/jerryzhao173985/shipmate/actions/workflows/ci.yml/badge.svg)](https://github.com/jerryzhao173985/shipmate/actions/workflows/ci.yml)
+
 A durable **PR-review & operations agent** for the team, built on
 [eve](https://eve.dev) (a filesystem-first framework for durable backend AI
 agents). Internal name: `ship`. Deployed on Vercel.
@@ -59,7 +61,12 @@ for the AI Gateway; elsewhere set `AI_GATEWAY_API_KEY`.
 ## CI / Deploy
 
 - **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): on every push,
-  `eve build` + `tsc` always run; the connection-independent eval subset runs once
-  the `AI_GATEWAY_API_KEY` repo secret is set.
+  `eve build` + `tsc` always run (no credential). The connection-independent eval
+  subset runs once the `AI_GATEWAY_API_KEY` repo secret is set, the way eve
+  documents for CI — `eve eval --tag ci --strict --junit` so a soft-score
+  regression fails the merge, per-eval results are annotated on the run, and the
+  full `.eve/evals/` artifacts are uploaded for debugging. (The connection evals —
+  tickets/github/linear — need Vercel Connect auth, so they're verified against the
+  live deployment rather than in CI.)
 - **Deploy**: the Vercel project is connected to this repo, so **pushing to `main`
-  auto-deploys** to production.
+  auto-deploys** to production (no manual `eve deploy`).
