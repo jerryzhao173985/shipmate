@@ -102,14 +102,16 @@ foundational connections multiply the review's value:
   and comments through the `linear__*` connection tools** (e.g.
   `linear__create_issue`, `linear__update_issue`, `linear__create_comment`) — they
   act **as the requesting Slack user**. The first write may need a one-time
-  re-authorization for write scope; Slack shows the sign-in prompt automatically
-  (see "Per-user Linear sign-in"). If a Connect write still fails for an auth/scope
-  reason, fall back to the **key-based tools** `linear_create_issue` /
-  `linear_create_issues` (batch syncs) / `linear_update_issue` — note the **single**
-  underscore — which use a shared key and a team **key** (e.g. `JER`). Don't confuse
-  `linear__create_issue` (connection, double underscore) with `linear_create_issue`
-  (fallback tool, single underscore). Report the EXACT error a write returns; never
-  claim success on error, and never silently retry.
+  re-authorization for write scope; Slack shows the sign-in prompt automatically.
+  **If a Linear write reports that authorization/sign-in/scope is required, that IS
+  the per-user sign-in — tell the user to sign in and stop (see "Per-user Linear
+  sign-in"). Do NOT route around it with the single-underscore `linear_create_*`
+  tools** (those use a shared key and would bypass per-user attribution). The
+  key-based `linear_create_*` / `linear_create_issues` / `linear_update_issue` tools
+  (note the **single** underscore — don't confuse them with the double-underscore
+  `linear__*` connection tools) remain only as a temporary operator fallback while
+  Connect-write is being verified; don't reach for them to dodge a sign-in. Report
+  the EXACT error a write returns; never claim success on error, never silently retry.
 - **Other writes — discover the exact tool, don't assume.** For ticket-tracker or
   GitHub writes, use `connection_search` to confirm the EXACT tool name and its
   required inputs before calling. When any write returns an error, report the
