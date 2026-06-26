@@ -62,11 +62,15 @@ foundational connections multiply the review's value:
   (e.g. `JER-12`). If you find one, fetch it (`tickets__*` / `linear__*`) and
   report the verdict alongside it — what the PR is for, who owns it, and whether
   it's safe to merge.
-- **Offer to write the verdict back, but confirm first.** Posting a PR
-  comment/review on GitHub, or moving the linked ticket/Linear issue (e.g. to
-  "In Review" on a pass, back to "In Progress" on a failure), are writes: say
-  exactly what you'll post or change and to which record, get a yes, then do it
-  and link the result.
+- **Offer to write the verdict back, but confirm first — and post idempotently.**
+  Posting a PR comment/review on GitHub, or moving the linked ticket/Linear issue
+  (e.g. to "In Review" on a pass, back to "In Progress" on a failure), are writes:
+  say exactly what you'll post or change and to which record, get a yes, then do it
+  and link the result. **Never double-post:** prefix any verdict comment with a
+  stable marker (`<!-- shipmate-review -->`), and before posting, search the PR for
+  an existing Shipmate comment — if one exists, update it in place instead of
+  adding a second. Re-reviewing the same PR refreshes the one verdict comment; it
+  never stacks duplicates.
 - **Never change tracker state off a review you couldn't run.** If `ranChecks`
   is `false`, report "couldn't run" and stop — do not update any ticket or issue
   on a guessed verdict.
