@@ -28,18 +28,21 @@ export default defineMcpClientConnection({
   url: "https://mcp.linear.app/mcp",
   description:
     "Linear workspace: search, read, create, update, and transition issues; projects, cycles, labels, comments, and relations.",
-  // User-scoped Connect (defaults to principalType "user"). REQUEST WRITE SCOPE:
-  // Linear's MCP server needs `write` (or granular `issues:create`/`issues:update`)
-  // to create/update issues — without it, reads work but writes fail with
-  // 400 invalid_request (the symptom we hit). `tokenParams.scopes` forwards these
-  // to Linear's OAuth, so the next authorization grants write.
-  // ⚠️ Existing users must RE-AUTHORIZE once (the cached read-only token doesn't
-  // carry write); the next Linear request re-triggers the Slack sign-in.
-  // Grounding: Linear OAuth scopes read/write/issues:* (linear.app/developers/oauth-2-0-authentication,
-  // linear.app/docs/mcp); Connect token `scopes` (vercel.com/docs/connect/concepts/tokens).
+  // User-scoped Connect (defaults to principalType "user"). REQUEST WRITE SCOPE so
+  // the agent can create/update/transition Linear issues (without it, reads work
+  // but writes fail). Linear's VALID OAuth scopes are read / write / issues:create /
+  // comments:create / admin — there is **no `issues:update`** (an earlier value of
+  // `issues:update` made Linear reject the sign-in with "Invalid scope:
+  // issues:update", which parked the session forever). The broad `write` scope
+  // already covers create + update + delete of issues and comments, so just
+  // ["read", "write"] is correct and sufficient.
+  // ⚠️ Scope change → existing users must RE-AUTHORIZE once (the cached token has
+  // the old/invalid scopes); the next Linear request re-triggers the Slack sign-in.
+  // Grounding: the live "Invalid scope: issues:update" error + Linear OAuth scopes
+  // (linear.app/developers/oauth-2-0-authentication); Connect token `scopes`.
   auth: connect({
     connector: "linear/ship",
-    tokenParams: { scopes: ["read", "write", "issues:create", "issues:update", "comments:create"] },
+    tokenParams: { scopes: ["read", "write"] },
   }),
   // Writes-only HITL: gates linear__* mutations (create/update/transition/
   // comment) from an interactive human; reads run free. Linear is user-scoped

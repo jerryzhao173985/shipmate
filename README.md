@@ -60,13 +60,15 @@ for the AI Gateway; elsewhere set `AI_GATEWAY_API_KEY`.
 
 ## CI / Deploy
 
-- **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): on every push,
-  `eve build` + `tsc` always run (no credential). The connection-independent eval
-  subset runs once the `AI_GATEWAY_API_KEY` repo secret is set, the way eve
-  documents for CI — `eve eval --tag ci --strict --junit` so a soft-score
-  regression fails the merge, per-eval results are annotated on the run, and the
-  full `.eve/evals/` artifacts are uploaded for debugging. (The connection evals —
-  tickets/github/linear — need Vercel Connect auth, so they're verified against the
-  live deployment rather than in CI.)
+- **CI** — two workflows, split to control AI Gateway cost:
+  - [`ci.yml`](.github/workflows/ci.yml) runs `eve build` + `tsc` on **every** push
+    (no model, free).
+  - [`evals.yml`](.github/workflows/evals.yml) runs the connection-independent eval
+    subset the eve way (`eve eval --tag ci --strict --junit`, per-eval annotations,
+    `.eve/evals/` artifacts) — but **only when `agent/**`, `evals/**`, or deps
+    change** (a README/CI/docs push spends nothing) and only once the
+    `AI_GATEWAY_API_KEY` repo secret is set. Connection + real-review evals need
+    Connect/sandbox and are verified against the live deployment
+    (`eve eval --url <prod>`), not in CI.
 - **Deploy**: the Vercel project is connected to this repo, so **pushing to `main`
   auto-deploys** to production (no manual `eve deploy`).

@@ -1,75 +1,20 @@
-# Shipmate CI — regression gate on every push/PR.
-#
-# Two tiers:
-#  1. Always (no credential): `eve build` + `tsc` — catches discovery/compile/type
-#     regressions.
-#  2. Evals (needs a model credential): the connection-INDEPENDENT eval subset
-#     (`--tag ci` → review-couldnt-run, correlation-memory, correlate,
-#     review-structured), run the way eve documents for CI — `--strict` (soft-score
-#     regressions fail the merge) and `--junit` (per-eval annotations). Evals call
-#     the live model, so they run ONLY when the `AI_GATEWAY_API_KEY` repo secret is
-#     set; until then they're skipped and CI still passes on the free checks. (The
-#     connection evals — tickets/github/linear — need Vercel Connect auth and are
-#     verified against the deployed agent, not in CI.)
-#
-# Enable the eval tier with one secret:
-#   gh secret set AI_GATEWAY_API_KEY --repo jerryzhao173985/shipmate
-#   (value: a Vercel AI Gateway API key for anthropic/claude-sonnet-4.6).
-#
-# Grounded in eve's own CI guidance: node_modules/eve/docs/evals/running.mdx:39-54,
-# reporters.mdx:47-55.
+# Shipmate CI — the FREE checks (no model, no AI Gateway cost). Runs on every push.
+# The eval tier (which spends AI Gateway credit) lives in evals.yml and only runs
+# when the agent or evals change.
 name: CI
 
 on:
   push:
   pull_request:
 
-permissions:
-  contents: read
-  checks: write # let the JUnit reporter create a check run with per-eval annotations
-
 jobs:
-  ci:
+  checks:
     runs-on: ubuntu-latest
-    env:
-      # Exposed from the secret so the eval step can gate on its presence without
-      # referencing `secrets.*` in an `if:` (not allowed at step level).
-      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
       - run: npm ci
-
-      # Tier 1 — free checks (no model, no connections)
-      - run: npm run build
-      - run: npm run typecheck
-
-      # Tier 2 — connection-independent evals, strict + JUnit (only when the key is set)
-      - name: Evals (strict, JUnit)
-        if: ${{ env.AI_GATEWAY_API_KEY != '' }}
-        run: npx eve eval --tag ci --strict --junit .eve/junit.xml --timeout 300000
-
-      # Surface per-eval pass/fail in the run (non-fatal — the eval step is the gate)
-      - name: Publish eval results
-        if: ${{ always() && env.AI_GATEWAY_API_KEY != '' }}
-        uses: mikepenz/action-junit-report@v5
-        with:
-          report_paths: .eve/junit.xml
-          check_name: eve evals
-          fail_on_failure: false
-          require_tests: false
-          include_passed: true # list the passing evals in the check (none failed)
-
-      # Keep the full eval artifacts (summary, per-eval verdicts, event streams)
-      - name: Upload eval artifacts
-        if: ${{ always() && env.AI_GATEWAY_API_KEY != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: eve-eval-artifacts
-          path: |
-            .eve/junit.xml
-            .eve/evals/
-          if-no-files-found: ignore
-          retention-days: 14
+      - run: npm run build # eve build (compile + discovery diagnostics)
+      - run: npm run typecheck # tsc

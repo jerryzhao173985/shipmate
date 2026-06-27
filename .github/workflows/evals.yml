@@ -1,0 +1,69 @@
+# Shipmate evals — the tier that SPENDS AI Gateway credit (each eval drives real
+# model turns). To control cost, this runs ONLY when something that can change an
+# eval's outcome changes: the agent, the evals, or dependencies. A README/CI/docs
+# push runs the free CI checks (ci.yml) but NOT this — so it costs nothing.
+#
+# What it runs: the connection-INDEPENDENT subset (`--tag ci` → review-couldnt-run,
+# correlation-memory, correlate, review-structured) the eve way — `--strict` (a
+# soft-score regression fails the merge) + `--junit` (per-eval annotations) +
+# uploaded `.eve/evals/` artifacts. Gated on the AI_GATEWAY_API_KEY repo secret.
+# (Connection + real-review evals need Connect/sandbox and are verified against the
+# live deployment with `eve eval --url <prod>`, not here.)
+name: Evals
+
+on:
+  push:
+    paths:
+      - "agent/**"
+      - "evals/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/evals.yml"
+  pull_request:
+    paths:
+      - "agent/**"
+      - "evals/**"
+      - "package.json"
+      - "package-lock.json"
+  workflow_dispatch: # allow a manual run from the Actions tab
+
+permissions:
+  contents: read
+  checks: write # let the JUnit reporter create a check run with per-eval annotations
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+
+      - name: Evals (strict, JUnit)
+        if: ${{ env.AI_GATEWAY_API_KEY != '' }}
+        run: npx eve eval --tag ci --strict --junit .eve/junit.xml --timeout 300000
+
+      - name: Publish eval results
+        if: ${{ always() && env.AI_GATEWAY_API_KEY != '' }}
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: .eve/junit.xml
+          check_name: eve evals
+          fail_on_failure: false
+          require_tests: false
+          include_passed: true
+
+      - name: Upload eval artifacts
+        if: ${{ always() && env.AI_GATEWAY_API_KEY != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eve-eval-artifacts
+          path: |
+            .eve/junit.xml
+            .eve/evals/
+          if-no-files-found: ignore
+          retention-days: 14
