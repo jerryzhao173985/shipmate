@@ -70,12 +70,17 @@ export default githubChannel({
     ? { appId: APP_ID, privateKey: APP_PRIVATE_KEY, webhookSecret: APP_WEBHOOK_SECRET }
     : connectGitHubCredentials("github/ship"),
   botName: process.env.SHIPMATE_GITHUB_BOTNAME ?? "shipmate",
+  // Auto-review on a new PR (opened/reopened) AND on every push to an open PR
+  // (synchronize) — so re-reviewing is just `git push`, no fresh PR needed, and the
+  // Check Run re-keys onto the new head SHA each time.
   onPullRequest: (ctx, pr) =>
-    pr.action === "opened"
+    pr.action === "opened" ||
+    pr.action === "reopened" ||
+    pr.action === "synchronize"
       ? {
           auth: defaultGitHubAuth(ctx),
           context: [
-            "This pull request was just opened. Review it: call review_pr on this PR's URL, then post the verdict back as a single idempotent PR comment and note the linked ticket/Linear issue. If review_pr reports ranChecks:false, say it couldn't be run — do not guess a pass/fail. (A GitHub Check Run is published automatically from the review_pr result; you don't post the check yourself.)",
+            "Review this pull request: call review_pr on this PR's URL, then post the verdict back as a single idempotent PR comment and note the linked ticket/Linear issue. If review_pr reports ranChecks:false, say it couldn't be run — do not guess a pass/fail. (A GitHub Check Run is published automatically from the review_pr result; you don't post the check yourself.)",
           ],
         }
       : null,
