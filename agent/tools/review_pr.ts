@@ -40,7 +40,11 @@ const CHECK_TIMEOUT = 420;
 const OVERALL_MS = 20 * 60 * 1000;
 
 // The project scripts we run as independent checks, in order.
-const CHECK_SCRIPTS = ["lint", "typecheck", "build", "test"] as const;
+// Order matters: `build` runs BEFORE `typecheck`, because a repo whose build step
+// generates types (e.g. eve build → `.eve/**/*.d.ts`, which this repo's tsc needs)
+// would falsely fail typecheck if checked first. Build-before-typecheck is correct
+// for any codegen repo and harmless otherwise.
+const CHECK_SCRIPTS = ["lint", "build", "typecheck", "test"] as const;
 
 const CheckResult = z.object({
   name: z.string(),
