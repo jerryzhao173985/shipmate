@@ -19,17 +19,22 @@ import { defaultGitHubAuth, githubChannel } from "eve/channels/github";
  * **blocks the merge** — the difference between a bot that comments and the
  * reviewer the team can't merge without.
  *
- * Credentials + inbound webhook verification are brokered by Vercel Connect via
- * the SAME `github/ship` connector that powers the `github__*` MCP tools — no
- * GitHub-App secrets in env. The webhook lands at `/eve/v1/github`.
+ * Credentials are ACTIVATION-GATED (see the switch below the type):
+ * - DEFAULT (no App secrets): Vercel Connect (`github/ship`). Connect does NOT
+ *   forward GitHub webhooks yet ("Slack-only in beta"), so this path is DORMANT —
+ *   the channel is discovered + typechecked but receives no PR events. Boots fine.
+ * - ACTIVE (all three App secrets set): a classic GitHub App webhook. eve mints the
+ *   App JWT + installation token (which the Check Run handler needs) and verifies
+ *   inbound webhooks natively at /eve/v1/github.
  *
- * [BLOCKED — Connect trigger forwarding is "Slack-only in beta"]
- * Vercel Connect does NOT forward GitHub webhooks yet, so the Connect path cannot
- * deliver PR events today (the channel is structurally discovered + typechecked
- * but DORMANT). To activate: switch to a classic GitHub App webhook
- * (credentials: {} → env GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY /
- * GITHUB_WEBHOOK_SECRET; point the App webhook at https://<deploy>/eve/v1/github),
- * and ensure the GitHub App grants **`checks: write`** (required for the Check Run).
+ * To go live (the only step left for Pillar 1 to fire):
+ *   1. Create a GitHub App; grant it `checks: write` + `pull_requests: read` +
+ *      `issues: read/write` (comments); subscribe to Pull request + Issue comment
+ *      events; set its webhook URL to https://<deploy>/eve/v1/github and a secret.
+ *   2. In the Vercel project env set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY (the PEM;
+ *      eve normalizes newlines), GITHUB_WEBHOOK_SECRET, then redeploy.
+ *   3. Install the App on the repo; open a PR; add "Shipmate Review" as a Required
+ *      Status Check in branch protection.
  *
  * grounding: githubChannel/onPullRequest/events/defaultGitHubAuth — docs/channels/github.mdx;
  * channel.github.request → GitHubApiResponse{body} (channels/github/api.d.ts:30-34);
@@ -48,8 +53,22 @@ type ReviewVerdict = {
   summary?: string;
 };
 
+// Activation switch (boot-safe). When ALL THREE GitHub App secrets are present, use
+// the classic App-webhook path: eve mints the App JWT + installation token (which the
+// Check Run handler needs) and verifies inbound webhooks natively at /eve/v1/github.
+// When any is missing, fall back to the Vercel Connect path — which is DORMANT today
+// (Connect doesn't forward GitHub webhooks yet) but boots cleanly. So setting the
+// secrets activates the channel; leaving them unset never breaks the deploy.
+// Env names match eve's resolver fallbacks (channels/github/auth.js).
+const APP_ID = process.env.GITHUB_APP_ID;
+const APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY;
+const APP_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET;
+const useAppWebhook = Boolean(APP_ID && APP_PRIVATE_KEY && APP_WEBHOOK_SECRET);
+
 export default githubChannel({
-  credentials: connectGitHubCredentials("github/ship"),
+  credentials: useAppWebhook
+    ? { appId: APP_ID, privateKey: APP_PRIVATE_KEY, webhookSecret: APP_WEBHOOK_SECRET }
+    : connectGitHubCredentials("github/ship"),
   botName: process.env.SHIPMATE_GITHUB_BOTNAME ?? "shipmate",
   onPullRequest: (ctx, pr) =>
     pr.action === "opened"
