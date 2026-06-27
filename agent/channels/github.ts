@@ -13,31 +13,41 @@ import { defaultGitHubAuth, githubChannel } from "eve/channels/github";
  * `review_pr` (its own sandbox checkout + run), correlates with the linked
  * ticket / Linear issue, and posts the verdict back as an idempotent PR comment.
  *
+ * AUTHORITY (Pillar 1): the `action.result` handler below also turns the
+ * `review_pr` verdict into a GitHub **Check Run** keyed on the PR head SHA. Made a
+ * Required Status Check in branch protection, a `failure` conclusion physically
+ * **blocks the merge** — the difference between a bot that comments and the
+ * reviewer the team can't merge without.
+ *
  * Credentials + inbound webhook verification are brokered by Vercel Connect via
  * the SAME `github/ship` connector that powers the `github__*` MCP tools — no
  * GitHub-App secrets in env. The webhook lands at `/eve/v1/github`.
  *
- * Posture note: the model has `bash` disabled (prompt-injection hardening). The
- * channel still checks the repo out into the sandbox, and the model can inspect
- * it via `read_file`/`glob`/`grep`; controlled *execution* happens only through
- * `review_pr`. That is the intended security posture, not a limitation.
- *
  * [BLOCKED — Connect trigger forwarding is "Slack-only in beta"]
- * Vercel Connect does NOT forward GitHub webhooks yet
- * (vercel.com/docs/connect/concepts/triggers: "Trigger forwarding is Slack-only
- * in beta"), so the Connect path above cannot deliver PR events today, even
- * though `connectGitHubCredentials` anticipates it (code-vs-docs divergence).
- * To activate NOW, switch to a classic GitHub App webhook instead of Connect:
- *   credentials: {}  // falls back to env GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY /
- *                    // GITHUB_WEBHOOK_SECRET; point the App's webhook at
- *                    // https://<deployment>/eve/v1/github
- * Until then this channel is structurally discovered + typechecked but DORMANT
- * (no webhook source). `botName` must also match the App's login for @mentions.
- * Coordinated with the review/sandbox lane (it triggers their `review_pr`).
+ * Vercel Connect does NOT forward GitHub webhooks yet, so the Connect path cannot
+ * deliver PR events today (the channel is structurally discovered + typechecked
+ * but DORMANT). To activate: switch to a classic GitHub App webhook
+ * (credentials: {} → env GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY /
+ * GITHUB_WEBHOOK_SECRET; point the App webhook at https://<deploy>/eve/v1/github),
+ * and ensure the GitHub App grants **`checks: write`** (required for the Check Run).
  *
- * grounding: githubChannel/onPullRequest/defaultGitHubAuth — docs/channels/github.mdx:7,35,44-52;
- * connectGitHubCredentials — @vercel/connect/eve (github-credentials.d.ts).
+ * grounding: githubChannel/onPullRequest/events/defaultGitHubAuth — docs/channels/github.mdx;
+ * channel.github.request → GitHubApiResponse{body} (channels/github/api.d.ts:30-34);
+ * action.result data.result: RuntimeActionResult (protocol/message.d.ts:171-181);
+ * RuntimeToolResultActionResult{toolName,output} (runtime/actions/types.d.ts:107-113);
+ * channel.repository{owner,name} (inbound.d.ts:6-12), channel.state.headSha (state.d.ts:22).
  */
+
+const CHECK_NAME = "Shipmate Review";
+
+// The subset of review_pr's Verdict the Check Run reads.
+type ReviewVerdict = {
+  ranChecks?: boolean;
+  passed?: boolean;
+  failingChecks?: string[];
+  summary?: string;
+};
+
 export default githubChannel({
   credentials: connectGitHubCredentials("github/ship"),
   botName: process.env.SHIPMATE_GITHUB_BOTNAME ?? "shipmate",
@@ -46,8 +56,79 @@ export default githubChannel({
       ? {
           auth: defaultGitHubAuth(ctx),
           context: [
-            "This pull request was just opened. Review it: call review_pr on this PR's URL, then post the verdict back as a single idempotent PR comment and note the linked ticket/Linear issue. If review_pr reports ranChecks:false, say it couldn't be run — do not guess a pass/fail.",
+            "This pull request was just opened. Review it: call review_pr on this PR's URL, then post the verdict back as a single idempotent PR comment and note the linked ticket/Linear issue. If review_pr reports ranChecks:false, say it couldn't be run — do not guess a pass/fail. (A GitHub Check Run is published automatically from the review_pr result; you don't post the check yourself.)",
           ],
         }
       : null,
+
+  events: {
+    // PILLAR 1 — AUTHORITY. Publish the review_pr verdict as a Check Run on the PR
+    // head SHA. Additive: the github channel has NO built-in `action.result`
+    // handler, so this does not clobber the default reply-posting (message.completed).
+    //
+    // Mapping: passed → success ; failed (ranChecks:true, !passed) → FAILURE (gates
+    // the merge) ; couldn't run (ranChecks:false) → neutral (non-blocking — a sandbox
+    // hiccup must not block every merge; a human decides). Idempotent: update the
+    // existing Shipmate check run on this SHA, else create one.
+    //
+    // Needs the GitHub App installation to grant `checks: write`. If it doesn't, the
+    // request throws and we log + continue — the review comment still posts.
+    "action.result": async (data, channel) => {
+      const r = data.result;
+      if (data.error || r.kind !== "tool-result" || r.toolName !== "review_pr") return;
+
+      const out = r.output;
+      if (!out || typeof out !== "object" || Array.isArray(out)) return;
+      const v = out as ReviewVerdict;
+
+      const { owner, name: repo } = channel.repository;
+      const headSha = channel.state.headSha;
+      if (!headSha) return; // not a PR context — nothing to gate
+
+      const conclusion =
+        v.ranChecks === false ? "neutral" : v.passed ? "success" : "failure";
+      const title =
+        v.ranChecks === false
+          ? "Couldn't run the checks"
+          : v.passed
+            ? "All checks passed"
+            : `Failing: ${(v.failingChecks ?? []).join(", ") || "checks"}`;
+      const body = {
+        name: CHECK_NAME,
+        head_sha: headSha,
+        status: "completed",
+        conclusion,
+        output: { title, summary: v.summary ?? title },
+      };
+
+      try {
+        const existing = await channel.github.request<{
+          check_runs?: { id: number; name: string }[];
+        }>({
+          method: "GET",
+          path: `/repos/${owner}/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}`,
+        });
+        const found = existing.body.check_runs?.find((c) => c.name === CHECK_NAME);
+        if (found) {
+          await channel.github.request({
+            method: "PATCH",
+            path: `/repos/${owner}/${repo}/check-runs/${found.id}`,
+            body,
+          });
+        } else {
+          await channel.github.request({
+            method: "POST",
+            path: `/repos/${owner}/${repo}/check-runs`,
+            body,
+          });
+        }
+      } catch (err) {
+        // Most likely the GitHub App lacks `checks: write`. Don't fail the turn.
+        console.error(
+          "[shipmate] Check Run write failed (does the GitHub App grant checks:write?):",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    },
+  },
 });
