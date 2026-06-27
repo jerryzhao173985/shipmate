@@ -42,6 +42,9 @@ authored surface lives under [`agent/`](agent/):
   delete operations are blocked.
 - Untrusted PR code runs only inside the sandbox; secrets stay in the app runtime,
   never in a sandbox command or returned to the model.
+- The review verdict publishes as a GitHub **Check Run** keyed on the PR head SHA —
+  added as a Required Status Check, a failing review **blocks the merge** (authority,
+  not just a comment).
 
 ## Develop
 
