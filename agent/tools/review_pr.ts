@@ -27,6 +27,12 @@ import { z } from "zod";
  * as PASSED, so a flaky test doesn't block the merge; deterministic checks
  * (lint/build/typecheck) are not retried.
  *
+ * Compare-to-base: when checks fail on the merge ref, the failing ones are re-run
+ * on the base branch (the merge commit's first parent) in a SEPARATE, bounded
+ * sandbox call; any that fail there too are reported in `preexistingFailures`
+ * (already broken on base, not this PR's fault). Informational — it does not change
+ * the pass/fail gate; a human decides with the context.
+ *
  * The verdict carries `ranChecks`: when the sandbox can't clone or run the suite,
  * `ranChecks` is false and the model must report "couldn't run", never a pass/fail.
  *
@@ -43,6 +49,10 @@ const CLONE_TIMEOUT = 120;
 const INSTALL_TIMEOUT = 420;
 const CHECK_TIMEOUT = 420;
 const OVERALL_MS = 20 * 60 * 1000;
+// Separate, bounded budget for the optional base-branch comparison (below). It runs
+// as its OWN sandbox call AFTER the core verdict is captured, so it can never abort
+// or alter the core result — at worst it yields no pre-existing info.
+const BASE_COMPARE_MS = 6 * 60 * 1000;
 
 // The project scripts we run as independent checks, in order.
 // Order matters: `build` runs BEFORE `typecheck`, because a repo whose build step
@@ -70,6 +80,13 @@ const Verdict = z.object({
    * visible. Only `test` is retried; deterministic checks are not.
    */
   flakyChecks: z.array(z.string()),
+  /**
+   * Of the `failingChecks`, those that were ALSO failing on the base branch —
+   * i.e. PRE-EXISTING breakage this PR did not introduce. Surfaced so a reviewer
+   * (or whoever decides the merge) can tell "the PR broke it" from "it was already
+   * broken on base". Informational: does NOT change the pass/fail gate.
+   */
+  preexistingFailures: z.array(z.string()),
   /** Per-check outcomes for the checks that actually executed. */
   checks: z.array(CheckResult),
   /** True when at least one check was killed by the wall-clock timeout (exit 124). */
@@ -118,6 +135,7 @@ export default defineTool({
       ranChecks: false,
       failingChecks: [],
       flakyChecks: [],
+      preexistingFailures: [],
       checks: [],
       timedOut: false,
       reviewedRef: null as "merge" | "head" | null,
@@ -187,8 +205,9 @@ export default defineTool({
 
     let stdout = "";
     let runError: string | null = null;
+    let sandbox: Awaited<ReturnType<typeof ctx.getSandbox>> | null = null;
     try {
-      const sandbox = await ctx.getSandbox();
+      sandbox = await ctx.getSandbox();
       // Write the script to a file and run it (preserves newlines, defers all
       // expansion to the sandbox shell). An overall abortSignal backstops the
       // per-command timeouts in case the sandbox process itself wedges.
@@ -256,6 +275,55 @@ export default defineTool({
     const failingChecks = realChecks.filter((c) => !c.passed).map((c) => c.name);
     const passed = failingChecks.length === 0;
     const ran = realChecks.map((c) => c.name).join(", ");
+
+    // Compare-to-base: when real checks failed on the MERGE ref, re-run JUST those
+    // on the base branch to learn whether they were ALREADY failing (pre-existing,
+    // not introduced by this PR). This runs as a SEPARATE, time-bounded sandbox call
+    // AFTER the core verdict is captured above, so it can NEVER abort or change the
+    // core result — purely additive. Only on the merge ref (the merge commit's first
+    // parent IS the base, so no GitHub API call is needed). Best-effort: any failure
+    // just means no pre-existing info. Informational only — it does NOT change the
+    // pass/fail gate (we never silently un-block; a human decides with the context).
+    const preexistingFailures: string[] = [];
+    if (sandbox && failingChecks.length > 0 && reviewedRef === "merge") {
+      try {
+        const baseScript = [
+          "set -u",
+          "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true GCM_INTERACTIVE=never",
+          "cd review 2>/dev/null || exit 0",
+          // The base branch tip = the merge commit's first parent (HEAD is the
+          // merge commit the core run checked out).
+          'BASE=$(git rev-parse HEAD^1 2>/dev/null) || exit 0',
+          'git checkout -q "$BASE" 2>/dev/null || exit 0',
+          `if [ -f package-lock.json ]; then timeout -k 10 ${INSTALL_TIMEOUT} npm ci > ../baseinstall.log 2>&1; else timeout -k 10 ${INSTALL_TIMEOUT} npm install > ../baseinstall.log 2>&1; fi`,
+          "[ $? -eq 0 ] || exit 0",
+          'HAS(){ node -e "process.exit((require(\\"./package.json\\").scripts||{})[process.argv[1]]?0:1)" "$1" 2>/dev/null; }',
+          // Re-run ONLY the checks that failed on the merge; emit ###BASE <name> <exit>.
+          `for c in ${failingChecks.join(" ")}; do if HAS "$c"; then timeout -k 10 ${CHECK_TIMEOUT} npm run "$c" > "../base_$c.log" 2>&1; echo "###BASE $c $?"; fi; done`,
+        ].join("\n");
+        await sandbox.writeTextFile({ path: "base_compare.sh", content: baseScript });
+        const baseResult = await sandbox.run({
+          command: "bash base_compare.sh",
+          abortSignal: AbortSignal.timeout(BASE_COMPARE_MS),
+        });
+        const baseOut = `${baseResult.stdout ?? ""}\n${baseResult.stderr ?? ""}`;
+        const baseRc = new Map<string, number>();
+        for (const line of baseOut.split("\n")) {
+          const bm = line.match(/^###BASE (\S+) (-?\d+)\s*$/);
+          if (bm) baseRc.set(bm[1], Number.parseInt(bm[2], 10));
+        }
+        // A check is pre-existing only if base DEFINITIVELY reproduced the failure
+        // (ran and returned non-zero). If base couldn't run it (no marker), we do
+        // NOT downgrade — the merge failure stays genuine. Fail-safe direction.
+        for (const name of failingChecks) {
+          const rc = baseRc.get(name);
+          if (rc !== undefined && rc !== 0) preexistingFailures.push(name);
+        }
+      } catch {
+        // Base-compare is best-effort; a failure just means no pre-existing info.
+      }
+    }
+
     const refNote =
       reviewedRef === "head"
         ? " [reviewed PR head — the merge into the base has conflicts]"
@@ -265,10 +333,13 @@ export default defineTool({
     const flakyNote = flakyChecks.length
       ? ` (flaky: ${flakyChecks.join(", ")} failed then passed on retry)`
       : "";
+    const preexistingNote = preexistingFailures.length
+      ? ` [⚠️ ${preexistingFailures.join(", ")} also failing on the base branch — pre-existing, not introduced by this PR]`
+      : "";
     const summary = passed
       ? `${owner}/${repo}#${number}: all checks passed (${ran})${flakyNote}${refNote}.`
-      : `${owner}/${repo}#${number}: FAILED — ${failingChecks.join(", ")} failing${timedOut ? " (some timed out)" : ""} (ran: ${ran})${flakyNote}${refNote}. Not safe to merge.`;
+      : `${owner}/${repo}#${number}: FAILED — ${failingChecks.join(", ")} failing${timedOut ? " (some timed out)" : ""} (ran: ${ran})${flakyNote}${preexistingNote}${refNote}. Not safe to merge.`;
 
-    return { passed, ranChecks: true, failingChecks, flakyChecks, checks, timedOut, reviewedRef, summary, pr, output: trimTail(stdout) };
+    return { passed, ranChecks: true, failingChecks, flakyChecks, preexistingFailures, checks, timedOut, reviewedRef, summary, pr, output: trimTail(stdout) };
   },
 });
