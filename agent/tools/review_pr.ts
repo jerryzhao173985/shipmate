@@ -22,6 +22,11 @@ import { z } from "zod";
  * can't hang the durable step forever (the realistic failure mode for untrusted
  * PR code). A timed-out check exits 124 and is reported as a failing check.
  *
+ * Flaky resilience: a failing `test` is re-run ONCE (never on a timeout). A
+ * transient failure that passes on retry is recorded in `flakyChecks` and treated
+ * as PASSED, so a flaky test doesn't block the merge; deterministic checks
+ * (lint/build/typecheck) are not retried.
+ *
  * The verdict carries `ranChecks`: when the sandbox can't clone or run the suite,
  * `ranChecks` is false and the model must report "couldn't run", never a pass/fail.
  *
@@ -59,6 +64,12 @@ const Verdict = z.object({
   ranChecks: z.boolean(),
   /** Names of the checks that failed (e.g. ["test", "lint"]). Empty when none ran. */
   failingChecks: z.array(z.string()),
+  /**
+   * Real checks that FAILED then PASSED on a single retry — treated as passed (a
+   * transient failure must not block the merge), but surfaced so flakiness stays
+   * visible. Only `test` is retried; deterministic checks are not.
+   */
+  flakyChecks: z.array(z.string()),
   /** Per-check outcomes for the checks that actually executed. */
   checks: z.array(CheckResult),
   /** True when at least one check was killed by the wall-clock timeout (exit 124). */
@@ -106,6 +117,7 @@ export default defineTool({
       passed: false,
       ranChecks: false,
       failingChecks: [],
+      flakyChecks: [],
       checks: [],
       timedOut: false,
       reviewedRef: null as "merge" | "head" | null,
@@ -159,7 +171,18 @@ export default defineTool({
       'rc=$?; echo "###CHECK install $rc"; tail -n 30 ../install.log',
       'if [ "$rc" -ne 0 ]; then exit 0; fi',
       'HAS(){ node -e "process.exit((require(\\"./package.json\\").scripts||{})[process.argv[1]]?0:1)" "$1" 2>/dev/null; }',
-      `for c in ${CHECK_SCRIPTS.join(" ")}; do if HAS "$c"; then timeout -k 10 ${CHECK_TIMEOUT} npm run "$c" > "../$c.log" 2>&1; rc=$?; echo "###CHECK $c $rc"; tail -n 40 "../$c.log"; fi; done`,
+      // Run each check the project defines. A failing `test` is re-run ONCE (never
+      // on a timeout, exit 124): a transient failure that passes on retry is marked
+      // ###FLAKY and treated as passed, so a flaky test never blocks the merge.
+      // lint/build/typecheck are deterministic and are not retried.
+      `for c in ${CHECK_SCRIPTS.join(" ")}; do if HAS "$c"; then ` +
+        `timeout -k 10 ${CHECK_TIMEOUT} npm run "$c" > "../$c.log" 2>&1; rc=$?; ` +
+        `if [ "$c" = test ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then ` +
+        `echo "###RETRY test $rc"; ` +
+        `timeout -k 10 ${CHECK_TIMEOUT} npm run test > "../test.log" 2>&1; rc2=$?; ` +
+        `if [ "$rc2" -eq 0 ]; then echo "###FLAKY test"; rc=0; else rc=$rc2; fi; ` +
+        `fi; ` +
+        `echo "###CHECK $c $rc"; tail -n 40 "../$c.log"; fi; done`,
     ].join("\n");
 
     let stdout = "";
@@ -184,6 +207,15 @@ export default defineTool({
     for (const line of stdout.split("\n")) {
       const cm = line.match(/^###CHECK (\S+) (-?\d+)\s*$/);
       if (cm) checks.push({ name: cm[1], passed: cm[2] === "0", exitCode: Number.parseInt(cm[2], 10) });
+    }
+
+    // Checks that failed then passed on retry (###FLAKY <name>). Their final
+    // ###CHECK exit is 0, so they count as passed; we track them to keep the
+    // flakiness visible in the verdict.
+    const flakyChecks: string[] = [];
+    for (const line of stdout.split("\n")) {
+      const fm = line.match(/^###FLAKY (\S+)\s*$/);
+      if (fm && !flakyChecks.includes(fm[1])) flakyChecks.push(fm[1]);
     }
 
     const refLine = stdout.split("\n").find((l) => /^###REF (merge|head)\s*$/.test(l));
@@ -230,10 +262,13 @@ export default defineTool({
         : reviewedRef === "merge"
           ? " [reviewed the PR merged into its base]"
           : "";
+    const flakyNote = flakyChecks.length
+      ? ` (flaky: ${flakyChecks.join(", ")} failed then passed on retry)`
+      : "";
     const summary = passed
-      ? `${owner}/${repo}#${number}: all checks passed (${ran})${refNote}.`
-      : `${owner}/${repo}#${number}: FAILED — ${failingChecks.join(", ")} failing${timedOut ? " (some timed out)" : ""} (ran: ${ran})${refNote}. Not safe to merge.`;
+      ? `${owner}/${repo}#${number}: all checks passed (${ran})${flakyNote}${refNote}.`
+      : `${owner}/${repo}#${number}: FAILED — ${failingChecks.join(", ")} failing${timedOut ? " (some timed out)" : ""} (ran: ${ran})${flakyNote}${refNote}. Not safe to merge.`;
 
-    return { passed, ranChecks: true, failingChecks, checks, timedOut, reviewedRef, summary, pr, output: trimTail(stdout) };
+    return { passed, ranChecks: true, failingChecks, flakyChecks, checks, timedOut, reviewedRef, summary, pr, output: trimTail(stdout) };
   },
 });
