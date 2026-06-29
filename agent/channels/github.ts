@@ -49,6 +49,9 @@ import { MARKER, verdictComment, type ReviewVerdict } from "#lib/verdict-comment
  */
 
 const CHECK_NAME = "Shipmate Review";
+// Sub-marker delimiting the additive "Linked work" section the auto-review appends to
+// the (code-owned) verdict comment, so re-reviews REPLACE it rather than stack.
+const LINK_MARKER = "<!-- linked-work -->";
 // MARKER, ReviewVerdict, and verdictComment are pure → extracted to
 // agent/lib/verdict-comment.ts so they're unit-tested in free CI (test/verdict-comment.test.ts).
 
@@ -70,8 +73,9 @@ export default githubChannel({
   botName: process.env.SHIPMATE_GITHUB_BOTNAME ?? "shipmate",
   // Auto-review on a new PR (opened/reopened) AND on every push to an open PR
   // (synchronize) — so re-reviewing is just `git push`, and both surfaces re-key
-  // onto the new head SHA. The agent ONLY runs review_pr; it must not post a
-  // comment — the Check Run + sticky comment are published by code (see events).
+  // onto the new head SHA. The agent runs review_pr (the Check Run + sticky comment
+  // are published by code) and additionally correlates: the resolved "Linked work"
+  // line it replies is merged into the sticky comment by message.completed below.
   onPullRequest: (ctx, pr) =>
     pr.action === "opened" ||
     pr.action === "reopened" ||
@@ -80,6 +84,7 @@ export default githubChannel({
           auth: defaultGitHubAuth(ctx),
           context: [
             "Review this pull request by calling review_pr on this PR's URL. Do NOT post a PR comment or call any GitHub comment/issue tool, and do not ask to — the verdict is published automatically as a 'Shipmate Review' Check Run and, only on a failure or couldn't-run, a single sticky PR comment. If review_pr reports ranChecks:false, that is reported as 'couldn't run' (non-blocking); never guess a pass/fail.",
+            "Then correlate the PR to its work item: read this PR's title, body, and branch (via the github__* read tools), pass that text to `correlate`, and for each candidate ticket id confirm it with `tickets__*` (fetch it; note its status). A Linear id (e.g. JER-5) can't be resolved here — the auto-review runs without a Linear user — so only reference it. Finish your reply with ONE line, exactly: `LINKED-WORK: <phrase>` — e.g. `LINKED-WORK: ENG-12 (In Review)`, or `LINKED-WORK: ENG-12 (In Review); references JER-5`, or `LINKED-WORK: none`. That line is merged into the sticky verdict comment automatically — do not post it yourself, and write nothing after it.",
           ],
         }
       : null,
@@ -239,21 +244,63 @@ export default githubChannel({
       }
     },
 
-    // Reply delivery (REPLACES the channel's built-in message.completed, which
-    // would auto-post the agent's reply as a PR comment).
+    // Reply delivery (REPLACES the channel's built-in message.completed, which would
+    // auto-post the agent's whole reply as a PR comment).
     //
-    // - Auto-review turns (no triggering comment): SUPPRESS the reply entirely.
-    //   The verdict lives in the Check Run + sticky comment above; the model's
-    //   prose would just be a duplicate/chatty third surface.
+    // - Auto-review turns (no triggering comment): the verdict surfaces (Check Run +
+    //   sticky comment) are owned by action.result, so we do NOT post the model's
+    //   prose as a second comment. We DO merge ONE additive piece: the resolved
+    //   "Linked work" line the model replies (`LINKED-WORK: …`) is appended to the
+    //   EXISTING sticky comment under LINK_MARKER (re-reviews replace, not stack).
+    //   Strictly additive: never posts a new comment, never touches the Check Run /
+    //   gate, and a failure here can't break the turn (best-effort).
     // - Interactive @mention turns (a real triggering comment, or a review thread):
     //   PRESERVE the default behavior — post the reply into the thread.
     "message.completed": async (data, channel) => {
       const st = channel.state;
       const isAutoReview =
         st.triggeringCommentId == null && st.conversationKind !== "review_thread";
-      if (isAutoReview) return; // verdict surfaces are owned by action.result
-      const text = data.message;
-      if (text && text.trim()) await channel.thread.post(text);
+      if (!isAutoReview) {
+        const text = data.message;
+        if (text && text.trim()) await channel.thread.post(text);
+        return;
+      }
+      // Auto-review: merge the model's resolved correlation into the sticky comment.
+      const m = /^LINKED-WORK:[ \t]*(.+?)[ \t]*$/im.exec(data.message ?? "");
+      const raw = m?.[1]?.trim();
+      if (!raw || /^none\.?$/i.test(raw)) return; // nothing resolved → leave as-is
+      // The phrase is model-derived from UNTRUSTED PR text upstream — cap length and
+      // neutralize backticks so a crafted PR can't distort the comment (single-line
+      // already, via the regex). The gate (Check Run) is untouched regardless.
+      const phrase = raw.slice(0, 200).replace(/`/g, "'");
+      const prNumber = st.pullRequestNumber;
+      if (!prNumber) return;
+      const { owner, name: repo } = channel.repository;
+      try {
+        const existing = await channel.github.request<{ id: number; body?: string }[]>({
+          method: "GET",
+          path: `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
+        });
+        const found = (Array.isArray(existing.body) ? existing.body : []).find(
+          (c) => typeof c.body === "string" && c.body.includes(MARKER),
+        );
+        // Only enrich an EXISTING verdict comment (fail / couldn't-run / pass-after-fail).
+        // On a first-time clean pass there's no comment, and we keep it silent rather
+        // than post one just for correlation — the green Check Run carries the verdict.
+        if (!found || typeof found.body !== "string") return;
+        const base = found.body.split(LINK_MARKER)[0].trimEnd(); // strip any prior section
+        await channel.github.request({
+          method: "PATCH",
+          path: `/repos/${owner}/${repo}/issues/comments/${found.id}`,
+          body: { body: `${base}\n\n${LINK_MARKER}\n**Linked work:** ${phrase}` },
+        });
+      } catch (err) {
+        // Best-effort narration — never fail the turn over correlation.
+        console.error(
+          "[shipmate] correlation merge failed (non-critical):",
+          err instanceof Error ? err.message : err,
+        );
+      }
     },
   },
 });
