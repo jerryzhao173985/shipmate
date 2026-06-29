@@ -91,10 +91,12 @@ Production: `https://ship-omega-lake.vercel.app` · deploys from `main` (Vercel 
   credit, so do it deliberately.
 - **Admins can bypass the gate.** Branch protection uses `enforce_admins:false` (a deliberate
   emergency override) — the repo owner can merge a red PR.
-- **No unit tests.** The deterministic correctness core — the write-gate verb match
-  (`isWriteOp`), the URL/segment guard (`safeSegment`), the output-marker parsers, the verdict
-  builder (`verdictComment`) — has **zero** model-free tests; the only tests are credit-spending
-  live evals. A regex slip there mis-gates or mis-reports silently. → Next Steps #3.
+- **Coverage gap is logic-vs-behavior (the "no unit tests" gap is closed, 2026-06-29).** The
+  deterministic LOGIC core is now unit-tested — **34 model-free `*.test.ts`** run in free CI
+  (`npm test` in `ci.yml`): `isWriteOp` (the HITL-gate arbiter), `safeSegment`, the verdict parsers
+  (`parseChecks`/`buildVerdict`), `verdictComment`, `sanitizeLinkPhrase`. What free tests still
+  can't cover is **behavior** — the connection / sandbox / real-review paths — which only the
+  credit-spending live evals exercise (run those deliberately).
 
 ---
 
@@ -106,6 +108,10 @@ product: **protecting the gate's integrity beats adding capability**, and the tw
 moves *reuse what already exists* rather than building new systems. Full reasoning lives in
 `docs/journey-and-architecture.md`. (This supersedes the earlier ordering, which had egress
 hardening as "#1 next" — that's now a conditional tripwire, see below.)
+
+**Status (2026-06-29): #1, #2, #3 are DONE, verified, and live** (loud gate `00b6461`; correlation
+`3446889`; unit tests `36e40ee`/`f6a3c20`/`9704c54`). **#4, #5, and the tripwires remain** — the
+detailed how-to is in `docs/implementation-plan-next.md`.
 
 | # | Step | Why it earns its place | Where | When |
 |---|------|------------------------|-------|------|
