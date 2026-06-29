@@ -156,7 +156,11 @@ export default githubChannel({
       const headSha = channel.state.headSha;
       if (!headSha) return; // not a PR context — nothing to gate
 
-      // 1) Check Run — the authority, keyed on the head SHA.
+      // 1) Check Run — the authority, keyed on the head SHA. A Required check that
+      // silently fails to publish is an invisible DEADLOCK ("Waiting for status"
+      // forever) or BYPASS — the worst outcome for the gate everything rests on. So
+      // retry once (covers a transient 5xx) and, on persistent failure, make it LOUD:
+      // a greppable [shipmate:authority-failed] line + a fallback comment (below).
       const conclusion =
         v.ranChecks === false ? "neutral" : v.passed ? "success" : "failure";
       const title =
@@ -172,32 +176,77 @@ export default githubChannel({
         conclusion,
         output: { title, summary: v.summary ?? title },
       };
-      try {
-        const existing = await channel.github.request<{
-          check_runs?: { id: number; name: string }[];
-        }>({
-          method: "GET",
-          path: `/repos/${owner}/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}`,
-        });
-        const found = existing.body.check_runs?.find((c) => c.name === CHECK_NAME);
-        await channel.github.request({
-          method: found ? "PATCH" : "POST",
-          path: found
-            ? `/repos/${owner}/${repo}/check-runs/${found.id}`
-            : `/repos/${owner}/${repo}/check-runs`,
-          body: checkBody,
-        });
-      } catch (err) {
+      let checkRunError: string | null = null;
+      let createAttempted = false; // once we POST a create, never POST again (dup guard)
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const existing = await channel.github.request<{
+            check_runs?: { id: number; name: string }[];
+          }>({
+            method: "GET",
+            path: `/repos/${owner}/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}`,
+          });
+          const found = existing.body.check_runs?.find((c) => c.name === CHECK_NAME);
+          if (found) {
+            await channel.github.request({
+              method: "PATCH",
+              path: `/repos/${owner}/${repo}/check-runs/${found.id}`,
+              body: checkBody,
+            }); // PATCH is idempotent — safe to repeat on a retry.
+          } else if (!createAttempted) {
+            // Create ONCE. Mark BEFORE the await: if this POST lands but its response is
+            // lost, GitHub's check-runs list is eventually consistent and may not show
+            // the run on the retry's GET — a second POST would create a DUPLICATE
+            // "Shipmate Review" run on the SHA and make the Required check's honored
+            // conclusion non-deterministic (could mask a fail or block a pass). So we
+            // never re-create; a not-yet-visible run is left to the loud log + comment.
+            createAttempted = true;
+            await channel.github.request({
+              method: "POST",
+              path: `/repos/${owner}/${repo}/check-runs`,
+              body: checkBody,
+            });
+          } else {
+            break; // retry, create already attempted, still not visible — do not re-POST
+          }
+          checkRunError = null;
+          break;
+        } catch (err) {
+          checkRunError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      if (checkRunError) {
+        // LOUD + greppable: the merge gate could not be published. This log is the
+        // last-resort backstop (grep target for a future self-monitoring digest —
+        // rethink #5, not yet wired); the fallback comment below surfaces it on the PR
+        // itself WHEN comment writes are permitted.
         console.error(
-          "[shipmate] Check Run write failed (does the GitHub App grant checks:write?):",
-          err instanceof Error ? err.message : err,
+          `[shipmate:authority-failed] ${JSON.stringify({
+            surface: "check-run",
+            repo: `${owner}/${repo}`,
+            headSha,
+            conclusion,
+            error: checkRunError,
+          })}`,
         );
       }
 
-      // 2) Sticky verdict comment — narration, only when there's something to say.
+      // 2) Sticky verdict comment — narration. Normally only on fail/couldn't-run (a
+      // clean pass is silent — the green check says it). BUT if the Check Run failed to
+      // publish, post REGARDLESS — even on a pass — so a stuck gate is visible on the PR
+      // (if comment writes ALSO fail, e.g. an App with neither checks:write nor
+      // issues:write, the [shipmate:authority-failed] log is the only signal until the
+      // rethink-#5 alert is wired).
       const prNumber = channel.state.pullRequestNumber;
       if (!prNumber) return; // a push outside a PR — the Check Run is enough
       const passed = v.ranChecks !== false && v.passed === true;
+      // First line only + backticks neutralized, so a multi-line err.message can't break
+      // out of the blockquote (the string is the API client's own message, not PR input).
+      const gateErr = checkRunError ? checkRunError.split("\n")[0].replace(/`/g, "'") : "";
+      const gateWarning = checkRunError
+        ? `\n\n> ⚠️ **Couldn't publish the "${CHECK_NAME}" check** (${gateErr}). If it's a Required status, the merge may be stuck on "Waiting for status" — push again to re-run, or check the GitHub App's \`checks: write\` permission.`
+        : "";
+      const body = verdictComment(v, headSha) + gateWarning;
       try {
         const existing = await channel.github.request<
           { id: number; body?: string }[]
@@ -210,25 +259,31 @@ export default githubChannel({
           (c) => typeof c.body === "string" && c.body.includes(MARKER),
         );
         if (found) {
-          // Keep the one comment current (even a pass, so it's never stale-red).
+          // Keep the one comment current (even a pass, so it's never stale-red); this
+          // also clears the gate warning once the Check Run publishes again.
           await channel.github.request({
             method: "PATCH",
             path: `/repos/${owner}/${repo}/issues/comments/${found.id}`,
-            body: { body: verdictComment(v, headSha) },
+            body: { body },
           });
-        } else if (!passed) {
-          // First time we have something to flag — post the single sticky comment.
+        } else if (!passed || checkRunError) {
+          // Something to flag (fail/couldn't-run) OR the gate failed to publish on a
+          // pass — post the single sticky comment so the state is visible on the PR.
           await channel.github.request({
             method: "POST",
             path: `/repos/${owner}/${repo}/issues/${prNumber}/comments`,
-            body: { body: verdictComment(v, headSha) },
+            body: { body },
           });
         }
-        // passed && !found → stay silent; the green Check Run is the verdict.
+        // passed && gate published && !found → stay silent; the green check is the verdict.
       } catch (err) {
         console.error(
-          "[shipmate] verdict comment upsert failed:",
-          err instanceof Error ? err.message : err,
+          `[shipmate:authority-failed] ${JSON.stringify({
+            surface: "comment",
+            repo: `${owner}/${repo}`,
+            prNumber,
+            error: err instanceof Error ? err.message : String(err),
+          })}`,
         );
       }
     },
