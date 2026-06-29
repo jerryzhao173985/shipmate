@@ -110,6 +110,7 @@ export default defineTool({
       failingChecks: [],
       flakyChecks: [],
       preexistingFailures: [],
+      changedFiles: [],
       checks: [],
       timedOut: false,
       reviewedRef: null as "merge" | "head" | null,
@@ -157,7 +158,13 @@ export default defineTool({
       'cd "$WORK"',
       // Prefer the merge ref (PR merged into base = what actually lands, like
       // GitHub Actions). Fall back to the PR head when the merge has conflicts.
-      `if timeout -k 10 ${CLONE_TIMEOUT} git fetch --depth 50 origin "pull/${number}/merge" > ../fetch.log 2>&1 && git checkout -q FETCH_HEAD 2> ../checkout.log; then echo "###REF merge"; echo "###CHECK checkout 0"; elif timeout -k 10 ${CLONE_TIMEOUT} git fetch --depth 50 origin "pull/${number}/head" > ../fetch.log 2>&1 && git checkout -q FETCH_HEAD 2> ../checkout.log; then echo "###REF head"; echo "###CHECK checkout 0"; else echo "###CHECK checkout 1"; tail -n 40 ../fetch.log ../checkout.log; exit 0; fi`,
+      `if timeout -k 10 ${CLONE_TIMEOUT} git fetch --depth 50 origin "pull/${number}/merge" > ../fetch.log 2>&1 && git checkout -q FETCH_HEAD 2> ../checkout.log; then echo "###REF merge"; echo "###CHECK checkout 0"; REVIEWED=merge; elif timeout -k 10 ${CLONE_TIMEOUT} git fetch --depth 50 origin "pull/${number}/head" > ../fetch.log 2>&1 && git checkout -q FETCH_HEAD 2> ../checkout.log; then echo "###REF head"; echo "###CHECK checkout 0"; REVIEWED=head; else echo "###CHECK checkout 1"; tail -n 40 ../fetch.log ../checkout.log; exit 0; fi`,
+      // Diff-awareness (INFORMATIONAL, never gates): for the merge ref, list the files
+      // this PR changes vs its base (= HEAD^1, the merge commit's first parent) as
+      // ###CHANGED markers, capped at 200. Only the merge ref — there HEAD^1 IS the
+      // base; on the head fallback it isn't, so we skip rather than mislead. Single-
+      // quoted so `${REVIEWED:-}`/`$f` stay literal bash (no JS interpolation).
+      'if [ "${REVIEWED:-}" = merge ] && git rev-parse --verify -q HEAD^1 >/dev/null 2>&1; then git diff --name-only HEAD^1 HEAD 2>/dev/null | head -n 200 | while IFS= read -r f; do [ -n "$f" ] && echo "###CHANGED $f"; done; fi',
       'if [ ! -f package.json ]; then echo "###CHECK detect 1"; echo "No package.json at repo root; Shipmate reviews Node projects for now."; exit 0; fi',
       `if [ -f package-lock.json ]; then timeout -k 10 ${INSTALL_TIMEOUT} npm ci > ../install.log 2>&1; else timeout -k 10 ${INSTALL_TIMEOUT} npm install > ../install.log 2>&1; fi`,
       'rc=$?; echo "###CHECK install $rc"; tail -n 30 ../install.log',

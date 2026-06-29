@@ -4,6 +4,7 @@ import {
   parseChecks,
   parseBaseResults,
   buildVerdict,
+  changeProximityNote,
 } from "../agent/lib/verdict-parse.ts";
 
 // parseChecks/buildVerdict ARE the verdict: they turn the sandbox's ###CHECK/
@@ -106,4 +107,35 @@ test("buildVerdict: couldn't-run (no package.json) names the detect reason", () 
   const v = build(out("###CHECK clone 0", "###REF merge", "###CHECK checkout 0", "###CHECK detect 1"));
   assert.equal(v.ranChecks, false);
   assert.match(v.summary, /no package\.json/);
+});
+
+// #4 diff-awareness — changedFiles + a SOFT, honest proximity note (never a causal claim,
+// never gates). The note is informational context on the narration surface only.
+
+test("parseChecks: ###CHANGED lines populate changedFiles (de-duped, order-preserved)", () => {
+  const p = parseChecks(out(...RAN_OK, "###CHANGED src/a.ts", "###CHANGED src/b.ts", "###CHANGED src/a.ts", "###CHECK test 0"));
+  assert.deepEqual(p.changedFiles, ["src/a.ts", "src/b.ts"]);
+});
+
+test("changeProximityNote: empty when not failing OR no changed files (informational only)", () => {
+  assert.equal(changeProximityNote("anything", ["src/a.ts"], false), "");
+  assert.equal(changeProximityNote("FAIL boom", [], true), "");
+});
+
+test("changeProximityNote: failing output referencing a changed file → 'likely related'", () => {
+  const note = changeProximityNote("FAIL at src/a.ts:10 boom", ["src/a.ts"], true);
+  assert.match(note, /likely related/);
+  assert.match(note, /1 file/);
+});
+
+test("changeProximityNote: failing output NOT referencing changed files → 'pre-existing or environmental'", () => {
+  const note = changeProximityNote("FAIL at src/other.ts boom", ["src/a.ts"], true);
+  assert.match(note, /may be pre-existing or environmental/);
+});
+
+test("changeProximityNote: a ###CHANGED marker line never self-matches (### lines are stripped first)", () => {
+  // the ONLY occurrence of src/a.ts is the marker line itself → must NOT count as a reference,
+  // or every failing review with a changed file would falsely read "likely related".
+  const note = changeProximityNote("###CHANGED src/a.ts\nFAIL something unrelated", ["src/a.ts"], true);
+  assert.match(note, /may be pre-existing or environmental/);
 });
