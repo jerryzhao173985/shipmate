@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verdictComment, MARKER } from "../agent/lib/verdict-comment.ts";
+import { verdictComment, MARKER, sanitizeLinkPhrase } from "../agent/lib/verdict-comment.ts";
 
 // verdictComment builds the single sticky PR comment. The MARKER must lead every
 // variant (the action.result handler finds + PATCHes the comment by it — a missing
@@ -42,4 +42,35 @@ test("the short head SHA appears (7 chars), not the full one", () => {
   const body = verdictComment({ ranChecks: true, passed: true }, "abc1234deadbeefcafe");
   assert.match(body, /abc1234/);
   assert.ok(!body.includes("abc1234deadbeefcafe"), "should use the 7-char short SHA");
+});
+
+// sanitizeLinkPhrase guards the model-derived "Linked work" phrase, which originates
+// from UNTRUSTED PR text — a prompt-injected PR could try to smuggle a markdown link,
+// raw HTML, or a fake `<!-- linked-work -->` marker into the bot's authoritative comment.
+// This is the security core (per rethink #3, the deterministic guards get tests).
+
+test("sanitizeLinkPhrase: neutralizes backticks", () => {
+  assert.equal(sanitizeLinkPhrase("see `rm -rf` here"), "see 'rm -rf' here");
+});
+
+test("sanitizeLinkPhrase: strips <>[] so a markdown link / HTML / fake marker can't render", () => {
+  // a fake closing of the verdict + an injected marker — the <> are removed, so no HTML comment forms
+  assert.equal(sanitizeLinkPhrase("ENG-12 <!-- linked-work --> spoof"), "ENG-12 !-- linked-work -- spoof");
+  // a markdown link — the brackets are removed, so it renders as plain text
+  assert.equal(sanitizeLinkPhrase("[click me](http://evil)"), "click me(http://evil)");
+  // raw HTML
+  assert.equal(sanitizeLinkPhrase('<img src=x onerror=alert(1)>'), "img src=x onerror=alert(1)");
+  // none of the dangerous chars survive
+  for (const ch of ["<", ">", "[", "]", "`"]) {
+    assert.ok(!sanitizeLinkPhrase("a<b>c[d]e`f").includes(ch), `${ch} must be stripped/replaced`);
+  }
+});
+
+test("sanitizeLinkPhrase: preserves legit ticket phrasing (parens, dashes, slashes)", () => {
+  assert.equal(sanitizeLinkPhrase("ENG-12 (In Review); references JER-5"), "ENG-12 (In Review); references JER-5");
+  assert.equal(sanitizeLinkPhrase("acme/widgets#7 (Merged)"), "acme/widgets#7 (Merged)");
+});
+
+test("sanitizeLinkPhrase: caps length (a runaway phrase can't bloat the comment)", () => {
+  assert.equal(sanitizeLinkPhrase("x".repeat(5000)).length, 200);
 });

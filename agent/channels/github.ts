@@ -1,6 +1,11 @@
 import { connectGitHubCredentials } from "@vercel/connect/eve";
 import { defaultGitHubAuth, githubChannel } from "eve/channels/github";
-import { MARKER, verdictComment, type ReviewVerdict } from "#lib/verdict-comment.js";
+import {
+  MARKER,
+  verdictComment,
+  sanitizeLinkPhrase,
+  type ReviewVerdict,
+} from "#lib/verdict-comment.js";
 
 /**
  * Reach Shipmate from GitHub — review PRs where they live.
@@ -204,16 +209,21 @@ export default githubChannel({
         : "";
       const body = verdictComment(v, headSha) + gateWarning;
       try {
-        const existing = await channel.github.request<
-          { id: number; body?: string }[]
-        >({
-          method: "GET",
-          path: `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
-        });
-        const list = Array.isArray(existing.body) ? existing.body : [];
-        const found = list.find(
-          (c) => typeof c.body === "string" && c.body.includes(MARKER),
-        );
+        // Paginate so the sticky comment is never missed on a comment-heavy PR:
+        // GitHub lists issue comments OLDEST-FIRST, so the bot's comment (created
+        // later) can be buried past page 1 → a missed find would STACK a duplicate
+        // verdict comment, breaking the one-sticky-comment invariant. Bounded to 10
+        // pages (1000 comments); past that, accept the (astronomically rare) edge.
+        let found: { id: number; body?: string } | undefined;
+        for (let page = 1; page <= 10; page++) {
+          const res = await channel.github.request<{ id: number; body?: string }[]>({
+            method: "GET",
+            path: `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`,
+          });
+          const list = Array.isArray(res.body) ? res.body : [];
+          found = list.find((c) => typeof c.body === "string" && c.body.includes(MARKER));
+          if (found || list.length < 100) break;
+        }
         if (found) {
           // Keep the one comment current (even a pass, so it's never stale-red); this
           // also clears the gate warning once the Check Run publishes again.
@@ -269,21 +279,28 @@ export default githubChannel({
       const m = /^LINKED-WORK:[ \t]*(.+?)[ \t]*$/im.exec(data.message ?? "");
       const raw = m?.[1]?.trim();
       if (!raw || /^none\.?$/i.test(raw)) return; // nothing resolved → leave as-is
-      // The phrase is model-derived from UNTRUSTED PR text upstream — cap length and
-      // neutralize backticks so a crafted PR can't distort the comment (single-line
-      // already, via the regex). The gate (Check Run) is untouched regardless.
-      const phrase = raw.slice(0, 200).replace(/`/g, "'");
+      // The phrase is model-derived from UNTRUSTED PR text upstream, so harden it
+      // (cap length, neutralize backticks, strip <>[]) before it lands in the bot's
+      // authoritative comment — a prompt-injected phrase must not render a markdown
+      // link, raw HTML, or a fake <!-- linked-work --> marker. The gate (Check Run) is
+      // untouched regardless. See sanitizeLinkPhrase (tested in verdict-comment.test.ts).
+      const phrase = sanitizeLinkPhrase(raw);
       const prNumber = st.pullRequestNumber;
       if (!prNumber) return;
       const { owner, name: repo } = channel.repository;
       try {
-        const existing = await channel.github.request<{ id: number; body?: string }[]>({
-          method: "GET",
-          path: `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
-        });
-        const found = (Array.isArray(existing.body) ? existing.body : []).find(
-          (c) => typeof c.body === "string" && c.body.includes(MARKER),
-        );
+        // Same pagination as action.result — find the sticky comment even when it's
+        // buried past page 1 on a comment-heavy PR, so the append isn't silently skipped.
+        let found: { id: number; body?: string } | undefined;
+        for (let page = 1; page <= 10; page++) {
+          const res = await channel.github.request<{ id: number; body?: string }[]>({
+            method: "GET",
+            path: `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`,
+          });
+          const list = Array.isArray(res.body) ? res.body : [];
+          found = list.find((c) => typeof c.body === "string" && c.body.includes(MARKER));
+          if (found || list.length < 100) break;
+        }
         // Only enrich an EXISTING verdict comment (fail / couldn't-run / pass-after-fail).
         // On a first-time clean pass there's no comment, and we keep it silent rather
         // than post one just for correlation — the green Check Run carries the verdict.

@@ -57,3 +57,13 @@ export function verdictComment(v: ReviewVerdict, headSha: string): string {
       .join("\n") + detail
   );
 }
+
+// Sanitize the model-derived "Linked work" phrase before it's rendered in the bot's
+// authoritative PR comment. The phrase originates from UNTRUSTED PR text (the model
+// extracts ticket ids from the PR title/body/branch), so a prompt-injection could try to
+// smuggle a misleading markdown link, raw HTML, or a fake `<!-- linked-work -->` marker.
+// Cap length, neutralize backticks, and strip `<>[]` (defusing links/images/HTML/the
+// marker) while preserving legit "(In Review)"-style parens. Pure → test-guarded.
+export function sanitizeLinkPhrase(raw: string, max = 200): string {
+  return raw.slice(0, max).replace(/`/g, "'").replace(/[<>[\]]/g, "");
+}
