@@ -4,7 +4,9 @@ A plain-language map of **what Shipmate can and can't do today**, **what to do n
 when it's worth doing), and the **operational lessons** that cost real time to learn — so the
 next change doesn't re-trip on them.
 
-Status at time of writing: Authority + Trust are **live in production and behavior-proven**.
+Status at time of writing: Authority + Trust are **live in production and behavior-proven**;
+Pillar 3 **observability** (one structured metric line per review) is **shipped** (deployed +
+typecheck/CI-clean, not yet behavior-confirmed — it emits on the next real review).
 Production: `https://ship-omega-lake.vercel.app` · deploys from `main` (Vercel git auto-deploy).
 
 ---
@@ -123,6 +125,22 @@ reliably), speculative connection tool block-lists, a configurable digest-templa
 - **Prod URL note.** Use the **stable alias** `ship-omega-lake.vercel.app`; per-deploy URLs are
   protection-gated (302) and change every deploy. `/eve/v1/info` returning 401 anonymously is
   OIDC protection working, not an outage; `/eve/v1/health` is the public liveness check.
+- **A GitHub App's "Pull request" *event* is separate from its `pull_requests` *permission*.**
+  The permission grants API access; the event subscription is what makes GitHub actually *send*
+  the webhook. So a third inbound-failure mode (besides the 401/404 above): **Recent Deliveries
+  empty** → the event isn't subscribed (or the webhook is off). The URL must be **exactly**
+  `…/eve/v1/github` (a bare `…/eve/v1` 404s). From the GitHub side, a `ship-eve` **check-suite
+  stuck `queued` with 0 runs and no bot comment** means the inbound webhook never produced a
+  turn — install + Checks access are fine, so look at events / URL / secret.
+- **The GitHub channel auto-posts the agent's reply as a comment** (built-in `message.completed`,
+  exactly like Slack) — so the auto-review must **not** also post a verdict through a tool, or it
+  double-posts. Verdict surfaces are owned by deterministic channel code (`agent/channels/github.ts`):
+  the Check Run + **one** sticky `<!-- shipmate-review -->` comment; the `message.completed`
+  override suppresses the auto-review's own reply and preserves interactive @mention replies.
+- **Multiple sessions/operators edit this repo in parallel.** Re-check `git status` (and
+  `git log -- <file>`) before editing a hot file like `review_pr.ts`, build on the *committed*
+  state, and commit small increments — that's how flaky-retry, base-compare, and observability
+  landed without collisions (the editor's file-modified guard caught the one near-miss).
 
 ---
 
