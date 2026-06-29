@@ -49,6 +49,8 @@ Production: `https://ship-omega-lake.vercel.app` · deploys from `main` (Vercel 
 - **Big repos can time out.** Budgets: clone 120 s, install/each-check 420 s, overall 20 min,
   plus base-compare up to 6 min. A very large/slow suite that exceeds the budget reports
   `couldn't run` (honest, not a false verdict).
+- **No diff context.** The verdict reports *which checks* failed but not *which files the PR
+  changed*, so a reader can't tell if a failure is even in the PR's blast radius. → Next Steps #4.
 
 ### Security / sandbox
 - **Egress is allow-all (`"*": []`).** Untrusted PR code in the sandbox can reach any host and
@@ -65,6 +67,11 @@ Production: `https://ship-omega-lake.vercel.app` · deploys from `main` (Vercel 
   secret, **every** delivery silently fails signature verification (HTTP 401) and nothing fires.
   The Vercel-Connect webhook path is **dormant** (Connect doesn't forward GitHub webhooks). See
   Operational Lessons.
+- **⚠️ The verdict surface can fail *silently* (the #1 risk).** The Check Run and sticky-comment
+  writes are wrapped in `try/catch` that only `console.error`s to Vercel logs
+  (`agent/channels/github.ts` ~`:190` and ~`:228`). A transient GitHub error or a token expiry
+  then leaves the Required check unpublished — an invisible **deadlock** ("Waiting for status"
+  forever) or **bypass** — with the only signal in logs nobody watches. → **Next Steps #1.**
 - **Linear is asymmetric.** Reads act *as the requesting Slack user* (user-scoped Connect);
   writes go through key-based GraphQL tools (operator fallback). There is **no app-scoped
   Linear** (architecturally impossible). A user must **re-authorize once** for write scope; a
@@ -84,21 +91,53 @@ Production: `https://ship-omega-lake.vercel.app` · deploys from `main` (Vercel 
   credit, so do it deliberately.
 - **Admins can bypass the gate.** Branch protection uses `enforce_admins:false` (a deliberate
   emergency override) — the repo owner can merge a red PR.
+- **No unit tests.** The deterministic correctness core — the write-gate verb match
+  (`isWriteOp`), the URL/segment guard (`safeSegment`), the output-marker parsers, the verdict
+  builder (`verdictComment`) — has **zero** model-free tests; the only tests are credit-spending
+  live evals. A regex slip there mis-gates or mis-reports silently. → Next Steps #3.
 
 ---
 
-## 3. Next steps (prioritized — do the top one only when it matters)
+## 3. Next steps (prioritized — rethought 2026-06-29)
 
-| # | Step | Why / when | Where |
-|---|------|------------|-------|
-| **1** | **Sandbox egress hardening** (Pillar 3) | **Do before accepting public-fork PRs.** Deny-by-default egress; allowlist the npm registry + `github.com`; block cloud-metadata (`169.254.169.254`) and RFC1918; `npm ci --ignore-scripts`. Low urgency while PRs are owner-only. | `agent/sandbox/sandbox.ts` |
-| **2** | **Broaden `review_pr` beyond Node** | Only if the team has Python/Go/Rust repos to review. Detect project type and run language-appropriate checks (pytest/ruff, `go test`/`build`, `cargo`). | `agent/tools/review_pr.ts` |
-| **3** | **Aggregate review metrics** | The per-review log line exists; turn it into rates + latency over time (a small periodic digest, or ship logs to an OTel/analytics sink). Lets you defend the spend and notice silent breakage. | new schedule / external sink |
-| **4** | **Optional: compare-to-base gate-flip** | If you want a *pure* pre-existing failure to **not** block (Check Run `neutral` instead of `failure`). Only after behavior-testing the gate change on a real PR — it changes merge behavior. | `review_pr.ts` + `agent/channels/github.ts` |
-| **5** | **Optional / lower value** | Linear Connect-write (only if Connect ever mints write tokens — then retire the key-based fallback); a dedicated review/triage subagent; richer verdict output for programmatic callers. | — |
+A grounded rethink (all commits + the code + eve's framework + best-practice, with an
+adversarial "earns-its-place" critic) reordered this list. The principle for a merge-gating
+product: **protecting the gate's integrity beats adding capability**, and the two best additive
+moves *reuse what already exists* rather than building new systems. Full reasoning lives in
+`docs/journey-and-architecture.md`. (This supersedes the earlier ordering, which had egress
+hardening as "#1 next" — that's now a conditional tripwire, see below.)
 
-**Not worth doing** (decided): a separate correlation subagent (the model chains the tools
-reliably), speculative connection tool block-lists, a configurable digest-templating system.
+| # | Step | Why it earns its place | Where | When |
+|---|------|------------------------|-------|------|
+| **1** | **Make verdict-write failures loud, not silent.** On a Check Run or sticky-comment write failure, stop swallowing it: emit a structured `[shipmate:authority-failed]` line, and on Check Run failure post a fallback "couldn't publish the gate" comment (optionally one retry on a 5xx). | The one fragility that hits the pillar everything rests on — a Required check that silently no-ops is an invisible deadlock or bypass (§2). Pure trust defense, not feature creep. **Low / low.** | `agent/channels/github.ts` (the two `catch` sites ~`:190`, `:228`) | **Now** |
+| **2** | **Wire correlation into the auto-review.** Chain the existing `correlate` after `review_pr`, resolve candidates via `tickets__*`/`linear__*`, and add ONE bounded "Linked work: ENG-12 (In Progress)" line to the sticky comment + Check Run summary. **Informational, never gating.** | The documented core mission ("correlate across systems") delivered *at the gate* — the capability enterprise reviewers charge for. Every piece exists and is Slack-proven, so it's a wiring job, not a new system. Turns "a CI check that runs tests" into "the agent that ties the PR to its work item." Med / low. | `agent/channels/github.ts` (`onPullRequest` context + `verdictComment`) | Now (after #1) |
+| **3** | **Unit-test the deterministic core in free CI.** `isWriteOp`/`WRITE_VERB` (the HITL-gate arbiter), `safeSegment`, the `###CHECK/FLAKY/REF/BASE` parsers, `verdictComment` — model-free `*.test.ts` run in `ci.yml`. | Currently zero unit tests (§2); a regex slip silently mis-gates a write or mis-reports a verdict, and `build`+`typecheck` can't catch it. Highest blast-radius, cheapest guard (no AI-Gateway spend). Med / low. | `*.test.ts` + `ci.yml` | Now / parallel |
+| **4** | **Diff-awareness.** `git diff --name-only HEAD^1` (the sandbox already has the merge commit), add `changedFiles` to the Verdict + a *soft* "failure is in / outside the changed area" note. **Soft proximity only — never a confident "this test covers your change".** | Today the verdict has no diff context, so a reader can't tell if a failure is in the PR's blast radius. Makes every line actionable, nearly free. Med / low; scope discipline is load-bearing (overclaiming erodes the honesty posture). | `agent/tools/review_pr.ts` | Soon |
+| **5** | **One self-monitoring digest** (optional). Fold gate-health (did a recent webhook turn fail to publish? — pairs with #1) + Shipmate's own review activity (from the `[shipmate:review]` metric line) into a single periodic Slack line. | Proactive **silent-breakage detection**, not analytics — in one surface, not a new channel. Sits just behind #4. | `agent/schedules/` | Soon |
+
+### Tripwires — correct, but build only when the trigger lands (not speculatively)
+- **Sandbox egress hardening** (deny-by-default; allowlist npm + `github.com`; block
+  `169.254.169.254`/RFC1918; `npm ci --ignore-scripts`) → **the moment you accept public-fork
+  PRs.** `agent/sandbox/sandbox.ts`.
+- **`merge_group` handling** → **the moment you turn on a GitHub merge queue.**
+- **Broaden `review_pr` beyond Node** (pytest/ruff, `go test`/`build`, `cargo`) → **when the
+  team actually has a non-Node repo to review.** `agent/tools/review_pr.ts`.
+
+### Not worth doing (decided — say no with confidence)
+- **Chatty LLM commentary / one-click auto-fix / whole-repo RAG.** These attack the moat: noise
+  is the #1 adoption killer; auto-fix needs re-enabling the deliberately-disabled `bash`/write
+  tools (a security regression); RAG competes with the differentiator (running code beats
+  reasoning about it).
+- **CI-triage via `onCheckSuite`/`onWorkflowRun`.** Re-narrates Actions failures the human can
+  already see — a chatty third surface. The correlation move (#2) delivers more from the same turn.
+- **Compare-to-base gate-flip** (`failure`→`neutral` for a pure pre-existing failure). Silently
+  un-blocks a merge off a heuristic — real risk on the authority surface for marginal gain.
+  Enrich the title text at most; don't flip the gate.
+- **Cross-PR flake quarantine ledger.** The one-shot retry covers the common single-flake case;
+  quarantine needs durable cross-session storage the agent deliberately lacks. Defer until
+  flaky-blocking is a *measured* recurring pain.
+- A separate correlation / triage **subagent**, **digest templating**, speculative connection
+  tool block-lists — premature or already-rejected.
 
 ---
 

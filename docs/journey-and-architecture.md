@@ -243,8 +243,12 @@ retry is `test`-only and never on a timeout · GitHub = app-scoped, Linear = use
    commit `agent/**` → push (`main` auto-deploys) → confirm `/eve/v1/health`. **A green compile
    never proves auth or behavior.** Don't run evals locally just to "test" (credit) — use CI +
    targeted prod smoke.
-5. The highest-value open work is **Pillar 3 sandbox egress hardening** *before* accepting
-   public-fork PRs (`agent/sandbox/sandbox.ts`).
+5. The highest-value open work is in `docs/limitations-and-next-steps.md` §3 (rethought
+   2026-06-29): **#1 = make verdict-write failures loud** (a latent *silent-gate* risk — the
+   Check Run / comment writes are swallowed to logs at `github.ts ~:190,:228`), then #2 wire
+   `correlate` into the auto-review, #3 unit-test the deterministic core in free CI. Sandbox
+   egress hardening is now a **conditional tripwire** (do it when you accept public-fork PRs),
+   not the headline.
 
 *(Durable context also lives in the session memory files: `shipmate-authority-checkrun.md`,
 `shipmate-pillar2-verdict-surfaces.md`, `shipmate-write-gate.md`, `shipmate-github-cicd.md`,
