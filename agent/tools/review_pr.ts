@@ -120,6 +120,31 @@ function trimTail(s: string, max = 1500): string {
   return `…(${s.length - max} chars trimmed)\n` + s.slice(s.length - max);
 }
 
+// Observability (Pillar 3): emit ONE structured, greppable line per review into
+// eve's run logs (Vercel / OTel — Agent Runs already times the call). Aggregating
+// these over time gives review count, pass/fail/couldn't-run rate, flaky +
+// pre-existing rate, and latency — without a cross-session store (defineState is
+// conversation-scoped). Never throws: a metric must not break a review.
+function emitReviewMetric(v: VerdictT, durationMs: number): void {
+  try {
+    console.log(
+      `[shipmate:review] ${JSON.stringify({
+        repo: `${v.pr.owner}/${v.pr.repo}`,
+        pr: v.pr.number,
+        outcome: v.ranChecks ? (v.passed ? "pass" : "fail") : "couldnt-run",
+        reviewedRef: v.reviewedRef,
+        failing: v.failingChecks,
+        flaky: v.flakyChecks,
+        preexisting: v.preexistingFailures,
+        timedOut: v.timedOut,
+        durationMs,
+      })}`,
+    );
+  } catch {
+    /* metrics must never break a review */
+  }
+}
+
 export default defineTool({
   description:
     "Review a GitHub pull request by actually running it: clone the PR branch in an isolated sandbox and run the project's install, lint, typecheck, build, and test scripts. Use whenever asked to review, check, or evaluate a pull request. Returns a structured verdict { passed, ranChecks, failingChecks, summary }. Public repos need no token; private repos work when the sandbox is configured to broker a GitHub token.",
@@ -130,6 +155,7 @@ export default defineTool({
   }),
   outputSchema: Verdict,
   async execute({ prUrl }, ctx): Promise<VerdictT> {
+    const startedAt = Date.now();
     const base = {
       passed: false,
       ranChecks: false,
@@ -261,7 +287,7 @@ export default defineTool({
       else if (by("detect")) reason = `the repo has no package.json at its root — Shipmate reviews Node projects for now.`;
       else if (!installOk) reason = `dependency install failed${timedOut ? " (timed out)" : ""}, so no checks could run.`;
       else reason = `the project defines none of: ${CHECK_SCRIPTS.join(", ")}.`;
-      return {
+      const verdict: VerdictT = {
         ...base,
         timedOut,
         reviewedRef,
@@ -270,6 +296,8 @@ export default defineTool({
         pr,
         output: trimTail(stdout),
       };
+      emitReviewMetric(verdict, Date.now() - startedAt);
+      return verdict;
     }
 
     const failingChecks = realChecks.filter((c) => !c.passed).map((c) => c.name);
@@ -340,6 +368,8 @@ export default defineTool({
       ? `${owner}/${repo}#${number}: all checks passed (${ran})${flakyNote}${refNote}.`
       : `${owner}/${repo}#${number}: FAILED — ${failingChecks.join(", ")} failing${timedOut ? " (some timed out)" : ""} (ran: ${ran})${flakyNote}${preexistingNote}${refNote}. Not safe to merge.`;
 
-    return { passed, ranChecks: true, failingChecks, flakyChecks, preexistingFailures, checks, timedOut, reviewedRef, summary, pr, output: trimTail(stdout) };
+    const verdict: VerdictT = { passed, ranChecks: true, failingChecks, flakyChecks, preexistingFailures, checks, timedOut, reviewedRef, summary, pr, output: trimTail(stdout) };
+    emitReviewMetric(verdict, Date.now() - startedAt);
+    return verdict;
   },
 });
