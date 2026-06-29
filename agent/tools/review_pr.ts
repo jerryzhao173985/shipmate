@@ -1,5 +1,13 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import {
+  CHECK_SCRIPTS,
+  Verdict,
+  type VerdictT,
+  safeSegment,
+  parseChecks,
+  buildVerdict,
+} from "#lib/verdict-parse.js";
 
 /**
  * review_pr — Shipmate's headline capability: review a pull request by RUNNING it.
@@ -36,6 +44,10 @@ import { z } from "zod";
  * The verdict carries `ranChecks`: when the sandbox can't clone or run the suite,
  * `ranChecks` is false and the model must report "couldn't run", never a pass/fail.
  *
+ * This file owns the SANDBOX ORCHESTRATION (the script, the runs, the timeouts);
+ * the pure parsing + verdict-building lives in `agent/lib/verdict-parse.ts` so it's
+ * unit-tested in free CI (`test/verdict-parse.test.ts`).
+ *
  * Read-only (no GitHub writes), so no approval gate. Posting a verdict back to
  * GitHub is a separate, confirm-first write done through the github__* connection.
  *
@@ -54,71 +66,7 @@ const OVERALL_MS = 20 * 60 * 1000;
 // or alter the core result — at worst it yields no pre-existing info.
 const BASE_COMPARE_MS = 6 * 60 * 1000;
 
-// The project scripts we run as independent checks, in order.
-// Order matters: `build` runs BEFORE `typecheck`, because a repo whose build step
-// generates types (e.g. eve build → `.eve/**/*.d.ts`, which this repo's tsc needs)
-// would falsely fail typecheck if checked first. Build-before-typecheck is correct
-// for any codegen repo and harmless otherwise.
-const CHECK_SCRIPTS = ["lint", "build", "typecheck", "test"] as const;
-
-const CheckResult = z.object({
-  name: z.string(),
-  passed: z.boolean(),
-  exitCode: z.number(),
-});
-
-const Verdict = z.object({
-  /** True only when every check ran AND passed. Never true if ranChecks is false. */
-  passed: z.boolean(),
-  /** False when the sandbox couldn't clone or execute the suite at all. */
-  ranChecks: z.boolean(),
-  /** Names of the checks that failed (e.g. ["test", "lint"]). Empty when none ran. */
-  failingChecks: z.array(z.string()),
-  /**
-   * Real checks that FAILED then PASSED on a single retry — treated as passed (a
-   * transient failure must not block the merge), but surfaced so flakiness stays
-   * visible. Only `test` is retried; deterministic checks are not.
-   */
-  flakyChecks: z.array(z.string()),
-  /**
-   * Of the `failingChecks`, those that were ALSO failing on the base branch —
-   * i.e. PRE-EXISTING breakage this PR did not introduce. Surfaced so a reviewer
-   * (or whoever decides the merge) can tell "the PR broke it" from "it was already
-   * broken on base". Informational: does NOT change the pass/fail gate.
-   */
-  preexistingFailures: z.array(z.string()),
-  /** Per-check outcomes for the checks that actually executed. */
-  checks: z.array(CheckResult),
-  /** True when at least one check was killed by the wall-clock timeout (exit 124). */
-  timedOut: z.boolean(),
-  /**
-   * Which ref was reviewed: "merge" = the PR merged into its base (what would
-   * actually land, like GitHub Actions' default), "head" = the PR branch tip
-   * (used when the merge has conflicts with the base). null when nothing checked out.
-   */
-  reviewedRef: z.enum(["merge", "head"]).nullable(),
-  /** One-line human verdict the model can quote. */
-  summary: z.string(),
-  /** Parsed PR coordinates, for the model to reference. */
-  pr: z.object({ owner: z.string(), repo: z.string(), number: z.number() }),
-  /** Tail of the sandbox output, for citing the failing excerpt. Trimmed. */
-  output: z.string(),
-});
-
-type VerdictT = z.infer<typeof Verdict>;
-
 const PR_URL = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i;
-// GitHub owner/repo charset; additionally reject "."/".." and leading "-" so a
-// segment can't become a git flag or a path-traversal token in the clone URL.
-const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
-export function safeSegment(s: string): boolean {
-  return SAFE_SEGMENT.test(s) && s !== "." && s !== ".." && !s.startsWith("-");
-}
-
-function trimTail(s: string, max = 1500): string {
-  if (s.length <= max) return s;
-  return `…(${s.length - max} chars trimmed)\n` + s.slice(s.length - max);
-}
 
 // Observability (Pillar 3): emit ONE structured, greppable line per review into
 // eve's run logs (Vercel / OTel — Agent Runs already times the call). Aggregating
@@ -247,73 +195,21 @@ export default defineTool({
       runError = err instanceof Error ? err.message : String(err);
     }
 
-    // Parse the "###CHECK <name> <exit>" markers.
-    const checks: { name: string; passed: boolean; exitCode: number }[] = [];
-    for (const line of stdout.split("\n")) {
-      const cm = line.match(/^###CHECK (\S+) (-?\d+)\s*$/);
-      if (cm) checks.push({ name: cm[1], passed: cm[2] === "0", exitCode: Number.parseInt(cm[2], 10) });
-    }
-
-    // Checks that failed then passed on retry (###FLAKY <name>). Their final
-    // ###CHECK exit is 0, so they count as passed; we track them to keep the
-    // flakiness visible in the verdict.
-    const flakyChecks: string[] = [];
-    for (const line of stdout.split("\n")) {
-      const fm = line.match(/^###FLAKY (\S+)\s*$/);
-      if (fm && !flakyChecks.includes(fm[1])) flakyChecks.push(fm[1]);
-    }
-
-    const refLine = stdout.split("\n").find((l) => /^###REF (merge|head)\s*$/.test(l));
-    const reviewedRef: "merge" | "head" | null = refLine
-      ? refLine.includes("merge")
-        ? "merge"
-        : "head"
-      : null;
-
-    const by = (n: string) => checks.find((c) => c.name === n);
-    const cloneOk = by("clone")?.passed === true;
-    const checkoutOk = by("checkout")?.passed === true;
-    const installOk = by("install")?.passed === true;
-
-    const realChecks = checks.filter((c) => (CHECK_SCRIPTS as readonly string[]).includes(c.name));
-    const ranChecks = cloneOk && checkoutOk && installOk && realChecks.length > 0;
-    const timedOut = checks.some((c) => c.exitCode === 124);
-
-    if (!ranChecks) {
-      let reason: string;
-      if (runError) reason = `the sandbox could not execute the review (${runError}). This usually means no real sandbox backend is available (the local just-bash backend has no git or network).`;
-      else if (!cloneOk) reason = `could not clone https://github.com/${owner}/${repo} in the sandbox — the repo may not exist, may be private (private repos need a GitHub token brokered by the sandbox), or no real git/network backend is available locally.`;
-      else if (!checkoutOk) reason = `cloned the repo but could not fetch/checkout PR #${number}'s head ref.`;
-      else if (by("detect")) reason = `the repo has no package.json at its root — Shipmate reviews Node projects for now.`;
-      else if (!installOk) reason = `dependency install failed${timedOut ? " (timed out)" : ""}, so no checks could run.`;
-      else reason = `the project defines none of: ${CHECK_SCRIPTS.join(", ")}.`;
-      const verdict: VerdictT = {
-        ...base,
-        timedOut,
-        reviewedRef,
-        checks,
-        summary: `Could not run checks for ${owner}/${repo}#${number}: ${reason}`,
-        pr,
-        output: trimTail(stdout),
-      };
-      emitReviewMetric(verdict, Date.now() - startedAt);
-      return verdict;
-    }
-
-    const failingChecks = realChecks.filter((c) => !c.passed).map((c) => c.name);
-    const passed = failingChecks.length === 0;
-    const ran = realChecks.map((c) => c.name).join(", ");
+    const parsed = parseChecks(stdout);
 
     // Compare-to-base: when real checks failed on the MERGE ref, re-run JUST those
     // on the base branch to learn whether they were ALREADY failing (pre-existing,
-    // not introduced by this PR). This runs as a SEPARATE, time-bounded sandbox call
-    // AFTER the core verdict is captured above, so it can NEVER abort or change the
-    // core result — purely additive. Only on the merge ref (the merge commit's first
-    // parent IS the base, so no GitHub API call is needed). Best-effort: any failure
-    // just means no pre-existing info. Informational only — it does NOT change the
-    // pass/fail gate (we never silently un-block; a human decides with the context).
-    const preexistingFailures: string[] = [];
-    if (sandbox && failingChecks.length > 0 && reviewedRef === "merge") {
+    // not introduced by this PR). A SEPARATE, time-bounded sandbox call AFTER the
+    // core parse, so it can NEVER abort or change the core result — purely additive.
+    // Only on the merge ref (the merge commit's first parent IS the base, no GitHub
+    // API). Best-effort; informational only — never silently un-blocks.
+    let baseOut = "";
+    if (
+      sandbox &&
+      parsed.ranChecks &&
+      parsed.failingChecks.length > 0 &&
+      parsed.reviewedRef === "merge"
+    ) {
       try {
         const baseScript = [
           "set -u",
@@ -327,48 +223,20 @@ export default defineTool({
           "[ $? -eq 0 ] || exit 0",
           'HAS(){ node -e "process.exit((require(\\"./package.json\\").scripts||{})[process.argv[1]]?0:1)" "$1" 2>/dev/null; }',
           // Re-run ONLY the checks that failed on the merge; emit ###BASE <name> <exit>.
-          `for c in ${failingChecks.join(" ")}; do if HAS "$c"; then timeout -k 10 ${CHECK_TIMEOUT} npm run "$c" > "../base_$c.log" 2>&1; echo "###BASE $c $?"; fi; done`,
+          `for c in ${parsed.failingChecks.join(" ")}; do if HAS "$c"; then timeout -k 10 ${CHECK_TIMEOUT} npm run "$c" > "../base_$c.log" 2>&1; echo "###BASE $c $?"; fi; done`,
         ].join("\n");
         await sandbox.writeTextFile({ path: "base_compare.sh", content: baseScript });
         const baseResult = await sandbox.run({
           command: "bash base_compare.sh",
           abortSignal: AbortSignal.timeout(BASE_COMPARE_MS),
         });
-        const baseOut = `${baseResult.stdout ?? ""}\n${baseResult.stderr ?? ""}`;
-        const baseRc = new Map<string, number>();
-        for (const line of baseOut.split("\n")) {
-          const bm = line.match(/^###BASE (\S+) (-?\d+)\s*$/);
-          if (bm) baseRc.set(bm[1], Number.parseInt(bm[2], 10));
-        }
-        // A check is pre-existing only if base DEFINITIVELY reproduced the failure
-        // (ran and returned non-zero). If base couldn't run it (no marker), we do
-        // NOT downgrade — the merge failure stays genuine. Fail-safe direction.
-        for (const name of failingChecks) {
-          const rc = baseRc.get(name);
-          if (rc !== undefined && rc !== 0) preexistingFailures.push(name);
-        }
+        baseOut = `${baseResult.stdout ?? ""}\n${baseResult.stderr ?? ""}`;
       } catch {
         // Base-compare is best-effort; a failure just means no pre-existing info.
       }
     }
 
-    const refNote =
-      reviewedRef === "head"
-        ? " [reviewed PR head — the merge into the base has conflicts]"
-        : reviewedRef === "merge"
-          ? " [reviewed the PR merged into its base]"
-          : "";
-    const flakyNote = flakyChecks.length
-      ? ` (flaky: ${flakyChecks.join(", ")} failed then passed on retry)`
-      : "";
-    const preexistingNote = preexistingFailures.length
-      ? ` [⚠️ ${preexistingFailures.join(", ")} also failing on the base branch — pre-existing, not introduced by this PR]`
-      : "";
-    const summary = passed
-      ? `${owner}/${repo}#${number}: all checks passed (${ran})${flakyNote}${refNote}.`
-      : `${owner}/${repo}#${number}: FAILED — ${failingChecks.join(", ")} failing${timedOut ? " (some timed out)" : ""} (ran: ${ran})${flakyNote}${preexistingNote}${refNote}. Not safe to merge.`;
-
-    const verdict: VerdictT = { passed, ranChecks: true, failingChecks, flakyChecks, preexistingFailures, checks, timedOut, reviewedRef, summary, pr, output: trimTail(stdout) };
+    const verdict = buildVerdict({ parsed, stdout, baseOut, runError, owner, repo, number });
     emitReviewMetric(verdict, Date.now() - startedAt);
     return verdict;
   },

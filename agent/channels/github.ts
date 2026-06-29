@@ -1,5 +1,6 @@
 import { connectGitHubCredentials } from "@vercel/connect/eve";
 import { defaultGitHubAuth, githubChannel } from "eve/channels/github";
+import { MARKER, verdictComment, type ReviewVerdict } from "#lib/verdict-comment.js";
 
 /**
  * Reach Shipmate from GitHub — review PRs where they live.
@@ -48,58 +49,8 @@ import { defaultGitHubAuth, githubChannel } from "eve/channels/github";
  */
 
 const CHECK_NAME = "Shipmate Review";
-// Stable marker so the verdict comment is found + updated in place, never stacked.
-const MARKER = "<!-- shipmate-review -->";
-
-// The subset of review_pr's Verdict the Check Run + comment read.
-type ReviewVerdict = {
-  ranChecks?: boolean;
-  passed?: boolean;
-  failingChecks?: string[];
-  timedOut?: boolean;
-  reviewedRef?: "merge" | "head" | null;
-  summary?: string;
-  output?: string;
-};
-
-// Build the human-readable sticky verdict comment from the structured Verdict.
-function verdictComment(v: ReviewVerdict, headSha: string): string {
-  const sha = headSha.slice(0, 7);
-  if (v.ranChecks === false) {
-    return [
-      MARKER,
-      `## ⚠️ Shipmate Review — couldn't run`,
-      ``,
-      v.summary ?? `The checks could not be run on \`${sha}\`.`,
-      ``,
-      `_The Check Run is **neutral** (non-blocking) — a sandbox hiccup won't block the merge. Re-push to retry._`,
-    ].join("\n");
-  }
-  if (v.passed) {
-    return [
-      MARKER,
-      `## ✅ Shipmate Review — passed`,
-      ``,
-      v.summary ?? `All checks passed on \`${sha}\`.`,
-    ].join("\n");
-  }
-  const failing = (v.failingChecks ?? []).join(", ") || "checks";
-  const excerpt = (v.output ?? "").trim();
-  const detail = excerpt
-    ? `\n\n<details><summary>Output excerpt</summary>\n\n\`\`\`\n${excerpt.slice(-1200)}\n\`\`\`\n\n</details>`
-    : "";
-  return (
-    [
-      MARKER,
-      `## ❌ Shipmate Review — failed`,
-      ``,
-      `**Failing: ${failing}**${v.timedOut ? " (some checks timed out)" : ""} on \`${sha}\`. Not safe to merge.`,
-      v.summary ? `\n${v.summary}` : ``,
-    ]
-      .filter((line) => line !== ``)
-      .join("\n") + detail
-  );
-}
+// MARKER, ReviewVerdict, and verdictComment are pure → extracted to
+// agent/lib/verdict-comment.ts so they're unit-tested in free CI (test/verdict-comment.test.ts).
 
 // Activation switch (boot-safe). When ALL THREE GitHub App secrets are present, use
 // the classic App-webhook path: eve mints the App JWT + installation token (which the

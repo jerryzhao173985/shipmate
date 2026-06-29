@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { safeSegment } from "../agent/tools/review_pr.ts";
+import { safeSegment } from "../agent/lib/verdict-parse.ts";
 
 // `safeSegment` guards the owner/repo that get interpolated into the sandbox clone
 // URL (`git clone https://github.com/<owner>/<repo>.git`). It must reject anything
