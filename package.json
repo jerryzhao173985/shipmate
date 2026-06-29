@@ -11,7 +11,8 @@
     "dev": "eve dev",
     "start": "eve start",
     "typecheck": "tsc",
-    "ci": "npm run build && npm run typecheck && eve eval --tag ci"
+    "test": "node --test test/*.test.ts",
+    "ci": "npm run build && npm run typecheck && npm test && eve eval --tag ci"
   },
   "dependencies": {
     "@vercel/connect": "0.2.2",

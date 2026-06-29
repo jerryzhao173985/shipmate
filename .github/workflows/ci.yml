@@ -18,3 +18,4 @@ jobs:
       - run: npm ci
       - run: npm run build # eve build (compile + discovery diagnostics)
       - run: npm run typecheck # tsc
+      - run: npm test # node --test — model-free unit tests of the deterministic core (free)

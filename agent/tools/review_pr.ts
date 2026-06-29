@@ -111,7 +111,7 @@ const PR_URL = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i;
 // GitHub owner/repo charset; additionally reject "."/".." and leading "-" so a
 // segment can't become a git flag or a path-traversal token in the clone URL.
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
-function safeSegment(s: string): boolean {
+export function safeSegment(s: string): boolean {
   return SAFE_SEGMENT.test(s) && s !== "." && s !== ".." && !s.startsWith("-");
 }
 

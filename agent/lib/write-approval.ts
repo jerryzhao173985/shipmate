@@ -37,7 +37,7 @@ import type { Approval } from "eve/tools";
 const WRITE_VERB =
   /^(create|update|delete|remove|add|set|transition|bulk|move|archive|merge|close|reopen|assign|unassign|convert|restore|patch|put|post|comment|edit|rename|link|unlink|duplicate|cancel|approve|subscribe|unsubscribe)/i;
 
-function isWriteOp(toolName: string): boolean {
+export function isWriteOp(toolName: string): boolean {
   const op = toolName.includes("__")
     ? toolName.slice(toolName.indexOf("__") + 2)
     : toolName;
